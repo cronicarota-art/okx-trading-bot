@@ -74,6 +74,14 @@ def iniciar_bot():
     print("[INFO] Controla el bot desde Telegram con /start")
     print("[INFO] Presiona Ctrl+C para detener")
 
+    async def reporte_diario_loop():
+        while True:
+            ahora = datetime.now()
+            if ahora.hour == 9 and ahora.minute == 0:
+                print("[INFO] Enviando reporte diario...")
+                await motor.enviar_reporte_diario()
+            await asyncio.sleep(60)
+
     async def arrancar():
         async with app:
             await app.initialize()
@@ -81,12 +89,12 @@ def iniciar_bot():
                 f"*Bot OKX iniciado*\n\n"
                 f"Modo: {modo}\n"
                 f"Balance: ${bot_estado['balance']:,.2f} USDT\n"
-                f"Panel web: http://localhost:8080\n"
                 f"Usa /iniciar para activar el trading\n\n"
                 f"{datetime.now().strftime('%d/%m/%Y %H:%M')}"
             )
             await app.start()
             await app.updater.start_polling(drop_pending_updates=True)
+            asyncio.create_task(reporte_diario_loop())
             await asyncio.Event().wait()
 
     asyncio.run(arrancar())

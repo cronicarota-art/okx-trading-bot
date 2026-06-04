@@ -9,6 +9,7 @@ from config.settings import (
     TAKE_PROFIT_PCT, MIN_ORDER_USDT, TRAILING_PCT
 )
 from utils.indicators import Indicators
+from utils.database import Database
 
 
 class Motor:
@@ -21,10 +22,11 @@ class Motor:
         self.pnl_hoy     = 0.0
         self.pnl_total   = 0.0
         self.trades_hoy  = 0
-        self.trades_ganados = 0
+        self.trades_ganados  = 0
         self.trades_perdidos = 0
         self.capital     = CAPITAL_TOTAL_USD
         self.ciclo_num   = 0
+        self.db          = Database()
         print("[INFO] Motor de trading iniciado")
 
     async def iniciar(self):
@@ -65,18 +67,49 @@ class Motor:
         winrate = 0
         if (self.trades_ganados + self.trades_perdidos) > 0:
             winrate = int((self.trades_ganados / (self.trades_ganados + self.trades_perdidos)) * 100)
-
+        stats = self.db.get_estadisticas()
         pnl_emoji = "📈" if self.pnl_hoy >= 0 else "📉"
         await self.notifier.enviar(
             f"*Reporte hora #{self.ciclo_num}*\n"
             f"{datetime.now().strftime('%d/%m/%Y %H:%M')}\n\n"
             f"Balance: ${balance:,.2f} USDT\n"
             f"{pnl_emoji} PnL hoy: {'+'if self.pnl_hoy>=0 else ''}{self.pnl_hoy:.2f} USDT\n"
+            f"PnL total: {'+'if self.pnl_total>=0 else ''}{self.pnl_total:.2f} USDT\n"
             f"Trades hoy: {self.trades_hoy}\n"
-            f"Winrate: {winrate}%\n"
+            f"Winrate total: {stats.get('winrate', 0)}%\n"
             f"Posiciones abiertas: {ops}\n\n"
             f"Proxima revision en 1 hora"
         )
+
+    async def enviar_reporte_diario(self):
+        balance  = self.okx.get_balance("USDT")
+        stats    = self.db.get_estadisticas()
+        pnl_emoji = "📈" if self.pnl_hoy >= 0 else "📉"
+        self.db.guardar_balance_diario(
+            balance    = balance,
+            pnl_dia    = self.pnl_hoy,
+            trades_dia = self.trades_hoy,
+            ganados    = self.trades_ganados,
+            perdidos   = self.trades_perdidos,
+        )
+        await self.notifier.enviar(
+            f"📊 *Reporte diario*\n"
+            f"{datetime.now().strftime('%d/%m/%Y')}\n\n"
+            f"Balance: ${balance:,.2f} USDT\n"
+            f"{pnl_emoji} PnL hoy: {'+'if self.pnl_hoy>=0 else ''}{self.pnl_hoy:.2f} USDT\n"
+            f"PnL total: {'+'if self.pnl_total>=0 else ''}{self.pnl_total:.2f} USDT\n\n"
+            f"Trades hoy: {self.trades_hoy}\n"
+            f"Ganados: {self.trades_ganados}\n"
+            f"Perdidos: {self.trades_perdidos}\n"
+            f"Winrate total: {stats.get('winrate', 0)}%\n\n"
+            f"Mejor trade: +${stats.get('mejor_trade', 0):.2f}\n"
+            f"Peor trade: ${stats.get('peor_trade', 0):.2f}\n"
+            f"Total trades historico: {stats.get('total_trades', 0)}"
+        )
+        self.pnl_hoy     = 0.0
+        self.trades_hoy  = 0
+        self.trades_ganados  = 0
+        self.trades_perdidos = 0
 
     def puede_abrir_trade(self):
         if len(self.operaciones) >= MAX_OPEN_TRADES:
@@ -91,7 +124,6 @@ class Motor:
     async def encontrar_mejor_oportunidad(self):
         print("[INFO] Escaneando pares con filtro de alta confianza...")
         mejores = []
-
         for par in TRADING_PAIRS:
             try:
                 velas_1h = self.okx.get_candles(par, "1H", 100)
@@ -100,7 +132,6 @@ class Motor:
                 analisis_1h = Indicators.analisis_completo(velas_1h)
                 if not analisis_1h:
                     continue
-
                 velas_4h = self.okx.get_candles(par, "4H", 60)
                 if len(velas_4h) < 50:
                     continue
@@ -115,7 +146,6 @@ class Motor:
                 rsi_1h    = analisis_1h["rsi"]
                 rsi_4h    = analisis_4h["rsi"]
 
-                # Señal de COMPRA
                 ambos_alcistas    = (señal_1h in ["COMPRA", "COMPRA_FUERTE"] and
                                      señal_4h in ["COMPRA", "COMPRA_FUERTE"])
                 fuerza_total      = fuerza_1h + fuerza_4h
@@ -123,20 +153,17 @@ class Motor:
                 rsi_seguro        = rsi_1h < 60 and rsi_4h < 65
                 tendencia_ok      = analisis_4h["tendencia"] == "ALCISTA"
 
-                # Señal de VENTA EN CORTO
                 ambos_bajistas    = (señal_1h in ["VENTA", "VENTA_FUERTE"] and
                                      señal_4h in ["VENTA", "VENTA_FUERTE"])
                 rsi_alto          = rsi_1h > 65 and rsi_4h > 60
                 tendencia_bajista = analisis_4h["tendencia"] == "BAJISTA"
 
                 if ambos_alcistas and suficiente_fuerza and rsi_seguro and tendencia_ok:
-                    stats     = self.okx.get_24h_stats(par)
                     confianza = min(99, int((fuerza_total / 12) * 100))
                     mejores.append({
                         "par":        par,
                         "analisis":   analisis_1h,
                         "analisis_4h": analisis_4h,
-                        "stats":      stats,
                         "lado":       "buy",
                         "fuerza":     fuerza_total,
                         "confianza":  confianza,
@@ -144,19 +171,16 @@ class Motor:
                     print(f"[COMPRA] {par}: Fuerza={fuerza_total} | RSI={rsi_1h}/{rsi_4h} | Confianza={confianza}%")
 
                 elif ambos_bajistas and suficiente_fuerza and rsi_alto and tendencia_bajista:
-                    stats     = self.okx.get_24h_stats(par)
                     confianza = min(99, int((fuerza_total / 12) * 100))
                     mejores.append({
                         "par":        par,
                         "analisis":   analisis_1h,
                         "analisis_4h": analisis_4h,
-                        "stats":      stats,
                         "lado":       "sell",
                         "fuerza":     fuerza_total,
                         "confianza":  confianza,
                     })
                     print(f"[VENTA] {par}: Fuerza={fuerza_total} | RSI={rsi_1h}/{rsi_4h} | Confianza={confianza}%")
-
                 else:
                     motivo = []
                     if not ambos_alcistas and not ambos_bajistas:
@@ -192,10 +216,8 @@ class Motor:
 
         balance  = self.okx.get_balance("USDT")
         cantidad = balance * MAX_RISK_PER_TRADE
-
         if cantidad < MIN_ORDER_USDT:
             cantidad = MIN_ORDER_USDT
-
         if cantidad > balance * 0.95:
             print(f"[WARNING] Balance insuficiente: ${balance:.2f}")
             return
@@ -204,11 +226,9 @@ class Motor:
         if lado == "buy":
             stop_loss   = precio * (1 - STOP_LOSS_PCT)
             take_profit = precio * (1 + TAKE_PROFIT_PCT)
-            trailing_max = precio
         else:
             stop_loss   = precio * (1 + STOP_LOSS_PCT)
             take_profit = precio * (1 - TAKE_PROFIT_PCT)
-            trailing_max = precio
 
         razon = " | ".join(analisis["razones"][:3])
 
@@ -232,14 +252,17 @@ class Motor:
                 "tamaño_usdt":    cantidad,
                 "stop_loss":      stop_loss,
                 "take_profit":    take_profit,
-                "trailing_max":   trailing_max,
+                "trailing_max":   precio,
                 "pnl_actual":     0.0,
                 "abierta_en":     datetime.now(),
                 "razon":          razon,
                 "confianza":      confianza,
+                "rsi":            analisis["rsi"],
+                "tendencia":      analisis["tendencia"],
             }
             self.operaciones.append(op)
             self.trades_hoy += 1
+            self.db.guardar_trade_abierto(op)
             await self.notifier.notificar_trade_abierto(
                 par, lado, precio, cantidad, stop_loss, take_profit, razon
             )
@@ -250,7 +273,6 @@ class Motor:
     async def monitorear_posiciones(self):
         if not self.operaciones:
             return
-
         for op in self.operaciones[:]:
             par            = op["par"]
             precio_actual  = self.okx.get_price(par)
@@ -259,29 +281,26 @@ class Motor:
 
             if lado == "buy":
                 pnl_pct = (precio_actual - precio_entrada) / precio_entrada
-                # Trailing stop: subir stop loss si el precio sube
                 if precio_actual > op["trailing_max"]:
                     op["trailing_max"] = precio_actual
                     nuevo_sl = precio_actual * (1 - TRAILING_PCT)
                     if nuevo_sl > op["stop_loss"]:
                         op["stop_loss"] = nuevo_sl
-                        print(f"[TRAIL] {par}: Stop Loss subido a ${nuevo_sl:,.4f}")
+                        print(f"[TRAIL] {par}: SL subido a ${nuevo_sl:,.4f}")
             else:
                 pnl_pct = (precio_entrada - precio_actual) / precio_entrada
-                # Trailing stop para ventas
                 if precio_actual < op["trailing_max"]:
                     op["trailing_max"] = precio_actual
                     nuevo_sl = precio_actual * (1 + TRAILING_PCT)
                     if nuevo_sl < op["stop_loss"]:
                         op["stop_loss"] = nuevo_sl
-                        print(f"[TRAIL] {par}: Stop Loss bajado a ${nuevo_sl:,.4f}")
+                        print(f"[TRAIL] {par}: SL bajado a ${nuevo_sl:,.4f}")
 
             pnl_usdt         = pnl_pct * op["tamaño_usdt"]
             op["pnl_actual"] = pnl_usdt
 
             cerrar = False
             razon  = ""
-
             if lado == "buy":
                 if precio_actual <= op["stop_loss"]:
                     cerrar = True
@@ -308,6 +327,7 @@ class Motor:
                         self.trades_ganados += 1
                     else:
                         self.trades_perdidos += 1
+                    self.db.cerrar_trade(op["orden_id"], precio_actual, pnl_usdt, razon)
                     self.operaciones.remove(op)
                     await self.notifier.notificar_trade_cerrado(
                         par, precio_entrada, precio_actual, pnl_usdt, razon
