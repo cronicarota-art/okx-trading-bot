@@ -1,0 +1,190 @@
+import time
+import hmac
+import hashlib
+import base64
+import json
+import requests
+from datetime import datetime, timezone
+
+import sys
+sys.path.insert(0, '.')
+from config.settings import OKX_API_KEY, OKX_SECRET_KEY, OKX_PASSPHRASE, OKX_DEMO_MODE
+
+
+class OKXConnector:
+
+    BASE_URL = "https://www.okx.com"
+
+    def __init__(self):
+        self.api_key    = OKX_API_KEY
+        self.secret_key = OKX_SECRET_KEY
+        self.passphrase = OKX_PASSPHRASE
+        self.demo_mode  = OKX_DEMO_MODE
+        self.session    = requests.Session()
+        modo = "DEMO" if self.demo_mode else "REAL"
+        print(f"[INFO] OKX Connector iniciado en modo {modo}")
+
+    def _get_timestamp(self):
+        return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
+
+    def _sign(self, timestamp, method, path, body=""):
+        message = f"{timestamp}{method.upper()}{path}{body}"
+        mac = hmac.new(
+            self.secret_key.encode('utf-8'),
+            message.encode('utf-8'),
+            hashlib.sha256
+        )
+        return base64.b64encode(mac.digest()).decode('utf-8')
+
+    def _get_headers(self, method, path, body=""):
+        ts = self._get_timestamp()
+        headers = {
+            "OK-ACCESS-KEY":        self.api_key,
+            "OK-ACCESS-SIGN":       self._sign(ts, method, path, body),
+            "OK-ACCESS-TIMESTAMP":  ts,
+            "OK-ACCESS-PASSPHRASE": self.passphrase,
+            "Content-Type":         "application/json",
+        }
+        if self.demo_mode:
+            headers["x-simulated-trading"] = "1"
+        return headers
+
+    def _request(self, method, endpoint, params=None, data=None):
+        url  = self.BASE_URL + endpoint
+        body = json.dumps(data) if data else ""
+        headers = self._get_headers(method, endpoint, body)
+        for intento in range(3):
+            try:
+                if method == "GET":
+                    resp = self.session.get(url, headers=headers, params=params, timeout=10)
+                else:
+                    resp = self.session.post(url, headers=headers, data=body, timeout=10)
+                resp.raise_for_status()
+                return resp.json()
+            except Exception as e:
+                print(f"[WARNING] Intento {intento+1}/3 fallido: {e}")
+                time.sleep(2 ** intento)
+        return {"code": "-1", "msg": "Error de conexion", "data": []}
+
+    def get_balance(self, currency="USDT"):
+        resp = self._request("GET", "/api/v5/account/balance")
+        try:
+            for detail in resp["data"][0]["details"]:
+                if detail["ccy"] == currency:
+                    return float(detail["availBal"])
+        except Exception:
+            pass
+        return 0.0
+
+    def get_full_balance(self):
+        resp = self._request("GET", "/api/v5/account/balance")
+        balances = {}
+        try:
+            for detail in resp["data"][0]["details"]:
+                if float(detail["cashBal"]) > 0:
+                    balances[detail["ccy"]] = {
+                        "disponible": float(detail["availBal"]),
+                        "total":      float(detail["cashBal"]),
+                    }
+        except Exception:
+            pass
+        return balances
+
+    def get_price(self, par):
+        resp = self._request("GET", "/api/v5/market/ticker", params={"instId": par})
+        try:
+            return float(resp["data"][0]["last"])
+        except Exception:
+            return 0.0
+
+    def get_candles(self, par, timeframe="1H", limite=200):
+        resp = self._request(
+            "GET", "/api/v5/market/candles",
+            params={"instId": par, "bar": timeframe, "limit": str(limite)}
+        )
+        velas = []
+        try:
+            for v in reversed(resp["data"]):
+                velas.append({
+                    "time":   datetime.fromtimestamp(int(v[0]) / 1000),
+                    "open":   float(v[1]),
+                    "high":   float(v[2]),
+                    "low":    float(v[3]),
+                    "close":  float(v[4]),
+                    "volume": float(v[5]),
+                })
+        except Exception:
+            pass
+        return velas
+
+    def get_24h_stats(self, par):
+        resp = self._request("GET", "/api/v5/market/ticker", params={"instId": par})
+        try:
+            d = resp["data"][0]
+            return {
+                "par":          par,
+                "precio":       float(d["last"]),
+                "cambio_24h":   float(d["change24h"]) * 100,
+                "alto_24h":     float(d["high24h"]),
+                "bajo_24h":     float(d["low24h"]),
+                "volumen_usdt": float(d["volCcy24h"]),
+            }
+        except Exception:
+            return {}
+
+    def place_market_order(self, par, lado, cantidad_usdt):
+        precio = self.get_price(par)
+        if precio == 0:
+            return {"ok": False, "error": "No se pudo obtener precio"}
+        cantidad = round(cantidad_usdt / precio, 6)
+        data = {
+            "instId":  par,
+            "tdMode":  "cash",
+            "side":    lado,
+            "ordType": "market",
+            "sz":      str(cantidad),
+        }
+        print(f"[INFO] Orden: {lado.upper()} {cantidad} {par} (~${cantidad_usdt:.2f})")
+        resp = self._request("POST", "/api/v5/trade/order", data=data)
+        try:
+            if resp["code"] == "0":
+                orden_id = resp["data"][0]["ordId"]
+                print(f"[OK] Orden ejecutada. ID: {orden_id}")
+                return {"ok": True, "orden_id": orden_id, "precio_ref": precio}
+            else:
+                error = resp.get("msg", "Error desconocido")
+                print(f"[ERROR] Error en orden: {error}")
+                return {"ok": False, "error": error}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def get_order_history(self, limite=10):
+        params = {"instType": "SPOT", "limit": str(limite)}
+        resp = self._request("GET", "/api/v5/trade/orders-history", params=params)
+        historial = []
+        try:
+            for o in resp.get("data", []):
+                historial.append({
+                    "orden_id":    o["ordId"],
+                    "par":         o["instId"],
+                    "lado":        o["side"],
+                    "precio_exec": float(o["avgPx"]) if o["avgPx"] else 0,
+                    "cantidad":    float(o["sz"]),
+                    "pnl":         float(o["pnl"]) if o["pnl"] else 0,
+                    "estado":      o["state"],
+                    "ejecutada":   datetime.fromtimestamp(int(o["fillTime"]) / 1000) if o.get("fillTime") else None,
+                })
+        except Exception:
+            pass
+        return historial
+
+    def test_connection(self):
+        print("[INFO] Probando conexion con OKX...")
+        try:
+            balance = self.get_balance()
+            modo = "DEMO" if self.demo_mode else "REAL"
+            print(f"[OK] Conexion exitosa | Modo: {modo} | Balance USDT: ${balance:.2f}")
+            return True
+        except Exception as e:
+            print(f"[ERROR] Error de conexion: {e}")
+            return False

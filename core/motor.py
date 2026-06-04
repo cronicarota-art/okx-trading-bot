@@ -1,0 +1,318 @@
+import asyncio
+from datetime import datetime
+
+import sys
+sys.path.insert(0, '.')
+from config.settings import (
+    TRADING_PAIRS, CAPITAL_TOTAL_USD, MAX_RISK_PER_TRADE,
+    MAX_OPEN_TRADES, MAX_DAILY_LOSS, STOP_LOSS_PCT,
+    TAKE_PROFIT_PCT, MIN_ORDER_USDT, TRAILING_PCT
+)
+from utils.indicators import Indicators
+
+
+class Motor:
+
+    def __init__(self, okx, notifier):
+        self.okx         = okx
+        self.notifier    = notifier
+        self.activo      = False
+        self.operaciones = []
+        self.pnl_hoy     = 0.0
+        self.pnl_total   = 0.0
+        self.trades_hoy  = 0
+        self.trades_ganados = 0
+        self.trades_perdidos = 0
+        self.capital     = CAPITAL_TOTAL_USD
+        self.ciclo_num   = 0
+        print("[INFO] Motor de trading iniciado")
+
+    async def iniciar(self):
+        self.activo = True
+        print("[OK] Motor activo. Analizando mercado cada hora...")
+        await self.notifier.enviar(
+            "*Motor de trading activo*\n\n"
+            f"Pares monitoreados: {len(TRADING_PAIRS)}\n"
+            f"Capital: ${self.capital:.2f} USDT\n"
+            f"Riesgo por trade: {MAX_RISK_PER_TRADE*100:.1f}%\n"
+            f"Modo: ALTA CONFIANZA\n"
+            f"Trailing Stop: {TRAILING_PCT*100:.1f}%\n"
+            "Analizando mercado..."
+        )
+        while self.activo:
+            try:
+                await self.ciclo()
+            except Exception as e:
+                print(f"[ERROR] Error en ciclo: {e}")
+                await self.notifier.notificar_error(str(e))
+            await asyncio.sleep(3600)
+
+    async def ciclo(self):
+        self.ciclo_num += 1
+        print(f"\n[INFO] Ciclo #{self.ciclo_num}: {datetime.now().strftime('%H:%M:%S')}")
+        await self.monitorear_posiciones()
+        if not self.puede_abrir_trade():
+            await self.enviar_reporte_horario()
+            return
+        mejor = await self.encontrar_mejor_oportunidad()
+        if mejor:
+            await self.ejecutar_trade(mejor)
+        await self.enviar_reporte_horario()
+
+    async def enviar_reporte_horario(self):
+        balance = self.okx.get_balance("USDT")
+        ops     = len(self.operaciones)
+        winrate = 0
+        if (self.trades_ganados + self.trades_perdidos) > 0:
+            winrate = int((self.trades_ganados / (self.trades_ganados + self.trades_perdidos)) * 100)
+
+        pnl_emoji = "📈" if self.pnl_hoy >= 0 else "📉"
+        await self.notifier.enviar(
+            f"*Reporte hora #{self.ciclo_num}*\n"
+            f"{datetime.now().strftime('%d/%m/%Y %H:%M')}\n\n"
+            f"Balance: ${balance:,.2f} USDT\n"
+            f"{pnl_emoji} PnL hoy: {'+'if self.pnl_hoy>=0 else ''}{self.pnl_hoy:.2f} USDT\n"
+            f"Trades hoy: {self.trades_hoy}\n"
+            f"Winrate: {winrate}%\n"
+            f"Posiciones abiertas: {ops}\n\n"
+            f"Proxima revision en 1 hora"
+        )
+
+    def puede_abrir_trade(self):
+        if len(self.operaciones) >= MAX_OPEN_TRADES:
+            print(f"[INFO] Max trades abiertos ({MAX_OPEN_TRADES})")
+            return False
+        if self.pnl_hoy < -(self.capital * MAX_DAILY_LOSS):
+            print("[WARNING] Limite de perdida diaria alcanzado. Bot pausado.")
+            self.activo = False
+            return False
+        return True
+
+    async def encontrar_mejor_oportunidad(self):
+        print("[INFO] Escaneando pares con filtro de alta confianza...")
+        mejores = []
+
+        for par in TRADING_PAIRS:
+            try:
+                velas_1h = self.okx.get_candles(par, "1H", 100)
+                if len(velas_1h) < 50:
+                    continue
+                analisis_1h = Indicators.analisis_completo(velas_1h)
+                if not analisis_1h:
+                    continue
+
+                velas_4h = self.okx.get_candles(par, "4H", 60)
+                if len(velas_4h) < 50:
+                    continue
+                analisis_4h = Indicators.analisis_completo(velas_4h)
+                if not analisis_4h:
+                    continue
+
+                señal_1h  = analisis_1h["señal"]
+                señal_4h  = analisis_4h["señal"]
+                fuerza_1h = analisis_1h["fuerza"]
+                fuerza_4h = analisis_4h["fuerza"]
+                rsi_1h    = analisis_1h["rsi"]
+                rsi_4h    = analisis_4h["rsi"]
+
+                # Señal de COMPRA
+                ambos_alcistas    = (señal_1h in ["COMPRA", "COMPRA_FUERTE"] and
+                                     señal_4h in ["COMPRA", "COMPRA_FUERTE"])
+                fuerza_total      = fuerza_1h + fuerza_4h
+                suficiente_fuerza = fuerza_total >= 6
+                rsi_seguro        = rsi_1h < 60 and rsi_4h < 65
+                tendencia_ok      = analisis_4h["tendencia"] == "ALCISTA"
+
+                # Señal de VENTA EN CORTO
+                ambos_bajistas    = (señal_1h in ["VENTA", "VENTA_FUERTE"] and
+                                     señal_4h in ["VENTA", "VENTA_FUERTE"])
+                rsi_alto          = rsi_1h > 65 and rsi_4h > 60
+                tendencia_bajista = analisis_4h["tendencia"] == "BAJISTA"
+
+                if ambos_alcistas and suficiente_fuerza and rsi_seguro and tendencia_ok:
+                    stats     = self.okx.get_24h_stats(par)
+                    confianza = min(99, int((fuerza_total / 12) * 100))
+                    mejores.append({
+                        "par":        par,
+                        "analisis":   analisis_1h,
+                        "analisis_4h": analisis_4h,
+                        "stats":      stats,
+                        "lado":       "buy",
+                        "fuerza":     fuerza_total,
+                        "confianza":  confianza,
+                    })
+                    print(f"[COMPRA] {par}: Fuerza={fuerza_total} | RSI={rsi_1h}/{rsi_4h} | Confianza={confianza}%")
+
+                elif ambos_bajistas and suficiente_fuerza and rsi_alto and tendencia_bajista:
+                    stats     = self.okx.get_24h_stats(par)
+                    confianza = min(99, int((fuerza_total / 12) * 100))
+                    mejores.append({
+                        "par":        par,
+                        "analisis":   analisis_1h,
+                        "analisis_4h": analisis_4h,
+                        "stats":      stats,
+                        "lado":       "sell",
+                        "fuerza":     fuerza_total,
+                        "confianza":  confianza,
+                    })
+                    print(f"[VENTA] {par}: Fuerza={fuerza_total} | RSI={rsi_1h}/{rsi_4h} | Confianza={confianza}%")
+
+                else:
+                    motivo = []
+                    if not ambos_alcistas and not ambos_bajistas:
+                        motivo.append(f"señales ({señal_1h}/{señal_4h})")
+                    if not suficiente_fuerza:
+                        motivo.append(f"fuerza baja ({fuerza_total}/6)")
+                    if not tendencia_ok and not tendencia_bajista:
+                        motivo.append(f"tendencia {analisis_4h['tendencia']}")
+                    print(f"[SKIP] {par}: {' | '.join(motivo)}")
+
+            except Exception as e:
+                print(f"[WARNING] Error analizando {par}: {e}")
+
+        if not mejores:
+            print("[INFO] Sin oportunidades de alta confianza en este ciclo")
+            return None
+
+        mejores.sort(key=lambda x: x["fuerza"], reverse=True)
+        elegido = mejores[0]
+        print(f"[OK] Mejor: {elegido['par']} | {elegido['lado'].upper()} | Confianza: {elegido['confianza']}%")
+        return elegido
+
+    async def ejecutar_trade(self, oportunidad):
+        par       = oportunidad["par"]
+        lado      = oportunidad["lado"]
+        analisis  = oportunidad["analisis"]
+        confianza = oportunidad["confianza"]
+
+        pares_abiertos = [op["par"] for op in self.operaciones]
+        if par in pares_abiertos:
+            print(f"[SKIP] Ya hay operacion en {par}")
+            return
+
+        balance  = self.okx.get_balance("USDT")
+        cantidad = balance * MAX_RISK_PER_TRADE
+
+        if cantidad < MIN_ORDER_USDT:
+            cantidad = MIN_ORDER_USDT
+
+        if cantidad > balance * 0.95:
+            print(f"[WARNING] Balance insuficiente: ${balance:.2f}")
+            return
+
+        precio      = self.okx.get_price(par)
+        if lado == "buy":
+            stop_loss   = precio * (1 - STOP_LOSS_PCT)
+            take_profit = precio * (1 + TAKE_PROFIT_PCT)
+            trailing_max = precio
+        else:
+            stop_loss   = precio * (1 + STOP_LOSS_PCT)
+            take_profit = precio * (1 - TAKE_PROFIT_PCT)
+            trailing_max = precio
+
+        razon = " | ".join(analisis["razones"][:3])
+
+        await self.notifier.enviar(
+            f"*Señal {lado.upper()}: {par}*\n\n"
+            f"Confianza: {confianza}%\n"
+            f"RSI 1H: {analisis['rsi']}\n"
+            f"Tendencia: {analisis['tendencia']}\n"
+            f"Razon: {razon}\n\n"
+            f"Ejecutando orden..."
+        )
+
+        resultado = self.okx.place_market_order(par, lado, cantidad)
+
+        if resultado["ok"]:
+            op = {
+                "orden_id":       resultado["orden_id"],
+                "par":            par,
+                "lado":           lado,
+                "precio_entrada": precio,
+                "tamaño_usdt":    cantidad,
+                "stop_loss":      stop_loss,
+                "take_profit":    take_profit,
+                "trailing_max":   trailing_max,
+                "pnl_actual":     0.0,
+                "abierta_en":     datetime.now(),
+                "razon":          razon,
+                "confianza":      confianza,
+            }
+            self.operaciones.append(op)
+            self.trades_hoy += 1
+            await self.notifier.notificar_trade_abierto(
+                par, lado, precio, cantidad, stop_loss, take_profit, razon
+            )
+        else:
+            print(f"[ERROR] Trade fallido: {resultado.get('error')}")
+            await self.notifier.enviar(f"*Error ejecutando trade*\n\n{resultado.get('error')}")
+
+    async def monitorear_posiciones(self):
+        if not self.operaciones:
+            return
+
+        for op in self.operaciones[:]:
+            par            = op["par"]
+            precio_actual  = self.okx.get_price(par)
+            precio_entrada = op["precio_entrada"]
+            lado           = op["lado"]
+
+            if lado == "buy":
+                pnl_pct = (precio_actual - precio_entrada) / precio_entrada
+                # Trailing stop: subir stop loss si el precio sube
+                if precio_actual > op["trailing_max"]:
+                    op["trailing_max"] = precio_actual
+                    nuevo_sl = precio_actual * (1 - TRAILING_PCT)
+                    if nuevo_sl > op["stop_loss"]:
+                        op["stop_loss"] = nuevo_sl
+                        print(f"[TRAIL] {par}: Stop Loss subido a ${nuevo_sl:,.4f}")
+            else:
+                pnl_pct = (precio_entrada - precio_actual) / precio_entrada
+                # Trailing stop para ventas
+                if precio_actual < op["trailing_max"]:
+                    op["trailing_max"] = precio_actual
+                    nuevo_sl = precio_actual * (1 + TRAILING_PCT)
+                    if nuevo_sl < op["stop_loss"]:
+                        op["stop_loss"] = nuevo_sl
+                        print(f"[TRAIL] {par}: Stop Loss bajado a ${nuevo_sl:,.4f}")
+
+            pnl_usdt         = pnl_pct * op["tamaño_usdt"]
+            op["pnl_actual"] = pnl_usdt
+
+            cerrar = False
+            razon  = ""
+
+            if lado == "buy":
+                if precio_actual <= op["stop_loss"]:
+                    cerrar = True
+                    razon  = "Stop Loss activado"
+                elif precio_actual >= op["take_profit"]:
+                    cerrar = True
+                    razon  = "Take Profit alcanzado"
+            else:
+                if precio_actual >= op["stop_loss"]:
+                    cerrar = True
+                    razon  = "Stop Loss activado"
+                elif precio_actual <= op["take_profit"]:
+                    cerrar = True
+                    razon  = "Take Profit alcanzado"
+
+            if cerrar:
+                lado_cierre = "sell" if lado == "buy" else "buy"
+                print(f"[INFO] Cerrando {par}: {razon} | PnL: {pnl_usdt:.2f} USDT")
+                resultado = self.okx.place_market_order(par, lado_cierre, op["tamaño_usdt"])
+                if resultado["ok"]:
+                    self.pnl_hoy   += pnl_usdt
+                    self.pnl_total += pnl_usdt
+                    if pnl_usdt >= 0:
+                        self.trades_ganados += 1
+                    else:
+                        self.trades_perdidos += 1
+                    self.operaciones.remove(op)
+                    await self.notifier.notificar_trade_cerrado(
+                        par, precio_entrada, precio_actual, pnl_usdt, razon
+                    )
+
+    def detener(self):
+        self.activo = False
+        print("[INFO] Motor detenido")
