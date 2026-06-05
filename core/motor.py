@@ -129,7 +129,6 @@ class Motor:
 
         for par in TRADING_PAIRS:
             try:
-                # Analisis 15 minutos
                 velas_15m = self.okx.get_candles(par, "15m", 100)
                 if len(velas_15m) < 50:
                     continue
@@ -137,7 +136,6 @@ class Motor:
                 if not analisis_15m:
                     continue
 
-                # Analisis 1H
                 velas_1h = self.okx.get_candles(par, "1H", 100)
                 if len(velas_1h) < 50:
                     continue
@@ -145,7 +143,6 @@ class Motor:
                 if not analisis_1h:
                     continue
 
-                # Analisis 4H
                 velas_4h = self.okx.get_candles(par, "4H", 60)
                 if len(velas_4h) < 50:
                     continue
@@ -153,54 +150,52 @@ class Motor:
                 if not analisis_4h:
                     continue
 
-                señal_15m = analisis_15m["señal"]
-                señal_1h  = analisis_1h["señal"]
-                señal_4h  = analisis_4h["señal"]
+                señal_15m  = analisis_15m["señal"]
+                señal_1h   = analisis_1h["señal"]
+                señal_4h   = analisis_4h["señal"]
                 fuerza_15m = analisis_15m["fuerza"]
                 fuerza_1h  = analisis_1h["fuerza"]
                 fuerza_4h  = analisis_4h["fuerza"]
                 rsi_1h     = analisis_1h["rsi"]
                 rsi_4h     = analisis_4h["rsi"]
+                fuerza_total = fuerza_15m + fuerza_1h + fuerza_4h
 
-                # COMPRA: al menos 2 de 3 timeframes alineados
+                # COMPRA: al menos 2 de 3 timeframes con señal de compra
                 señales_compra = sum([
                     1 for s in [señal_15m, señal_1h, señal_4h]
                     if s in ["COMPRA", "COMPRA_FUERTE"]
                 ])
-                fuerza_total   = fuerza_15m + fuerza_1h + fuerza_4h
-                rsi_seguro     = rsi_1h < 65 and rsi_4h < 70
-                tendencia_ok   = analisis_4h["tendencia"] in ["ALCISTA", "LATERAL"]
-                fuerza_minima  = fuerza_total >= 4
+                rsi_seguro    = rsi_1h < 70 and rsi_4h < 75
+                fuerza_minima = fuerza_total >= 4
 
-                # VENTA: al menos 2 de 3 timeframes bajistas
+                # VENTA: al menos 2 de 3 timeframes con señal de venta
                 señales_venta = sum([
                     1 for s in [señal_15m, señal_1h, señal_4h]
                     if s in ["VENTA", "VENTA_FUERTE"]
                 ])
-                rsi_alto          = rsi_1h > 60 and rsi_4h > 55
-                tendencia_bajista = analisis_4h["tendencia"] in ["BAJISTA", "LATERAL"]
+                rsi_alto = rsi_1h > 55 and rsi_4h > 50
 
-                if señales_compra >= 2 and fuerza_minima and rsi_seguro and tendencia_ok:
+                if señales_compra >= 2 and fuerza_minima and rsi_seguro:
                     confianza = min(99, int((fuerza_total / 15) * 100))
                     mejores.append({
-                        "par":        par,
-                        "analisis":   analisis_1h,
+                        "par":         par,
+                        "analisis":    analisis_1h,
                         "analisis_4h": analisis_4h,
-                        "lado":       "buy",
-                        "fuerza":     fuerza_total,
-                        "confianza":  confianza,
+                        "lado":        "buy",
+                        "fuerza":      fuerza_total,
+                        "confianza":   confianza,
                     })
                     print(f"[COMPRA] {par}: F={fuerza_total} | RSI={rsi_1h}/{rsi_4h} | {señal_15m}/{señal_1h}/{señal_4h} | {confianza}%")
 
-                elif señales_venta >= 2 and fuerza_minima and rsi_alto and tendencia_bajista:
+                elif señales_venta >= 2 and fuerza_minima and rsi_alto:
                     confianza = min(99, int((abs(fuerza_total) / 15) * 100))
                     mejores.append({
-                        "par":        par,
-                        "analisis":   analisis_1h,
+                        "par":         par,
+                        "analisis":    analisis_1h,
                         "analisis_4h": analisis_4h,
-                        "lado":       "sell",
-                        "fuerza":     fuerza_total,
-                        "confianza":  confianza,
+                        "lado":        "sell",
+                        "fuerza":      fuerza_total,
+                        "confianza":   confianza,
                     })
                     print(f"[VENTA] {par}: F={fuerza_total} | RSI={rsi_1h}/{rsi_4h} | {señal_15m}/{señal_1h}/{señal_4h} | {confianza}%")
 
