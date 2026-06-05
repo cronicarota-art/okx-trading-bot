@@ -15,31 +15,32 @@ from utils.database import Database
 class Motor:
 
     def __init__(self, okx, notifier):
-        self.okx         = okx
-        self.notifier    = notifier
-        self.activo      = False
-        self.operaciones = []
-        self.pnl_hoy     = 0.0
-        self.pnl_total   = 0.0
-        self.trades_hoy  = 0
+        self.okx             = okx
+        self.notifier        = notifier
+        self.activo          = False
+        self.operaciones     = []
+        self.pnl_hoy         = 0.0
+        self.pnl_total       = 0.0
+        self.trades_hoy      = 0
         self.trades_ganados  = 0
         self.trades_perdidos = 0
-        self.capital     = CAPITAL_TOTAL_USD
-        self.ciclo_num   = 0
-        self.db          = Database()
+        self.capital         = CAPITAL_TOTAL_USD
+        self.ciclo_num       = 0
+        self.db              = Database()
         print("[INFO] Motor de trading iniciado")
 
     async def iniciar(self):
         self.activo = True
-        print("[OK] Motor activo. Analizando mercado cada hora...")
+        print("[OK] Motor activo. Analizando mercado cada 30 minutos...")
         await self.notifier.enviar(
             "*Motor de trading activo*\n\n"
             f"Pares monitoreados: {len(TRADING_PAIRS)}\n"
             f"Capital: ${self.capital:.2f} USDT\n"
             f"Riesgo por trade: {MAX_RISK_PER_TRADE*100:.1f}%\n"
-            f"Modo: ALTA CONFIANZA\n"
+            f"Modo: CONFIANZA MEDIA-ALTA\n"
             f"Trailing Stop: {TRAILING_PCT*100:.1f}%\n"
-            "Analizando mercado..."
+            f"Analisis: 15m + 1H + 4H\n"
+            "Analizando mercado cada 30 minutos..."
         )
         while self.activo:
             try:
@@ -47,7 +48,7 @@ class Motor:
             except Exception as e:
                 print(f"[ERROR] Error en ciclo: {e}")
                 await self.notifier.notificar_error(str(e))
-            await asyncio.sleep(3600)
+            await asyncio.sleep(1800)
 
     async def ciclo(self):
         self.ciclo_num += 1
@@ -59,7 +60,8 @@ class Motor:
         mejor = await self.encontrar_mejor_oportunidad()
         if mejor:
             await self.ejecutar_trade(mejor)
-        await self.enviar_reporte_horario()
+        if self.ciclo_num % 2 == 0:
+            await self.enviar_reporte_horario()
 
     async def enviar_reporte_horario(self):
         balance = self.okx.get_balance("USDT")
@@ -67,7 +69,7 @@ class Motor:
         winrate = 0
         if (self.trades_ganados + self.trades_perdidos) > 0:
             winrate = int((self.trades_ganados / (self.trades_ganados + self.trades_perdidos)) * 100)
-        stats = self.db.get_estadisticas()
+        stats     = self.db.get_estadisticas()
         pnl_emoji = "📈" if self.pnl_hoy >= 0 else "📉"
         await self.notifier.enviar(
             f"*Reporte hora #{self.ciclo_num}*\n"
@@ -78,12 +80,12 @@ class Motor:
             f"Trades hoy: {self.trades_hoy}\n"
             f"Winrate total: {stats.get('winrate', 0)}%\n"
             f"Posiciones abiertas: {ops}\n\n"
-            f"Proxima revision en 1 hora"
+            f"Proxima revision en 30 minutos"
         )
 
     async def enviar_reporte_diario(self):
-        balance  = self.okx.get_balance("USDT")
-        stats    = self.db.get_estadisticas()
+        balance   = self.okx.get_balance("USDT")
+        stats     = self.db.get_estadisticas()
         pnl_emoji = "📈" if self.pnl_hoy >= 0 else "📉"
         self.db.guardar_balance_diario(
             balance    = balance,
@@ -106,8 +108,8 @@ class Motor:
             f"Peor trade: ${stats.get('peor_trade', 0):.2f}\n"
             f"Total trades historico: {stats.get('total_trades', 0)}"
         )
-        self.pnl_hoy     = 0.0
-        self.trades_hoy  = 0
+        self.pnl_hoy         = 0.0
+        self.trades_hoy      = 0
         self.trades_ganados  = 0
         self.trades_perdidos = 0
 
@@ -122,16 +124,28 @@ class Motor:
         return True
 
     async def encontrar_mejor_oportunidad(self):
-        print("[INFO] Escaneando pares con filtro de alta confianza...")
+        print("[INFO] Escaneando pares (15m + 1H + 4H)...")
         mejores = []
+
         for par in TRADING_PAIRS:
             try:
+                # Analisis 15 minutos
+                velas_15m = self.okx.get_candles(par, "15m", 100)
+                if len(velas_15m) < 50:
+                    continue
+                analisis_15m = Indicators.analisis_completo(velas_15m)
+                if not analisis_15m:
+                    continue
+
+                # Analisis 1H
                 velas_1h = self.okx.get_candles(par, "1H", 100)
                 if len(velas_1h) < 50:
                     continue
                 analisis_1h = Indicators.analisis_completo(velas_1h)
                 if not analisis_1h:
                     continue
+
+                # Analisis 4H
                 velas_4h = self.okx.get_candles(par, "4H", 60)
                 if len(velas_4h) < 50:
                     continue
@@ -139,27 +153,35 @@ class Motor:
                 if not analisis_4h:
                     continue
 
+                señal_15m = analisis_15m["señal"]
                 señal_1h  = analisis_1h["señal"]
                 señal_4h  = analisis_4h["señal"]
-                fuerza_1h = analisis_1h["fuerza"]
-                fuerza_4h = analisis_4h["fuerza"]
-                rsi_1h    = analisis_1h["rsi"]
-                rsi_4h    = analisis_4h["rsi"]
+                fuerza_15m = analisis_15m["fuerza"]
+                fuerza_1h  = analisis_1h["fuerza"]
+                fuerza_4h  = analisis_4h["fuerza"]
+                rsi_1h     = analisis_1h["rsi"]
+                rsi_4h     = analisis_4h["rsi"]
 
-                ambos_alcistas    = (señal_1h in ["COMPRA", "COMPRA_FUERTE"] and
-                                     señal_4h in ["COMPRA", "COMPRA_FUERTE"])
-                fuerza_total      = fuerza_1h + fuerza_4h
-                suficiente_fuerza = fuerza_total >= 6
-                rsi_seguro        = rsi_1h < 60 and rsi_4h < 65
-                tendencia_ok      = analisis_4h["tendencia"] == "ALCISTA"
+                # COMPRA: al menos 2 de 3 timeframes alineados
+                señales_compra = sum([
+                    1 for s in [señal_15m, señal_1h, señal_4h]
+                    if s in ["COMPRA", "COMPRA_FUERTE"]
+                ])
+                fuerza_total   = fuerza_15m + fuerza_1h + fuerza_4h
+                rsi_seguro     = rsi_1h < 65 and rsi_4h < 70
+                tendencia_ok   = analisis_4h["tendencia"] in ["ALCISTA", "LATERAL"]
+                fuerza_minima  = fuerza_total >= 4
 
-                ambos_bajistas    = (señal_1h in ["VENTA", "VENTA_FUERTE"] and
-                                     señal_4h in ["VENTA", "VENTA_FUERTE"])
-                rsi_alto          = rsi_1h > 65 and rsi_4h > 60
-                tendencia_bajista = analisis_4h["tendencia"] == "BAJISTA"
+                # VENTA: al menos 2 de 3 timeframes bajistas
+                señales_venta = sum([
+                    1 for s in [señal_15m, señal_1h, señal_4h]
+                    if s in ["VENTA", "VENTA_FUERTE"]
+                ])
+                rsi_alto          = rsi_1h > 60 and rsi_4h > 55
+                tendencia_bajista = analisis_4h["tendencia"] in ["BAJISTA", "LATERAL"]
 
-                if ambos_alcistas and suficiente_fuerza and rsi_seguro and tendencia_ok:
-                    confianza = min(99, int((fuerza_total / 12) * 100))
+                if señales_compra >= 2 and fuerza_minima and rsi_seguro and tendencia_ok:
+                    confianza = min(99, int((fuerza_total / 15) * 100))
                     mejores.append({
                         "par":        par,
                         "analisis":   analisis_1h,
@@ -168,10 +190,10 @@ class Motor:
                         "fuerza":     fuerza_total,
                         "confianza":  confianza,
                     })
-                    print(f"[COMPRA] {par}: Fuerza={fuerza_total} | RSI={rsi_1h}/{rsi_4h} | Confianza={confianza}%")
+                    print(f"[COMPRA] {par}: F={fuerza_total} | RSI={rsi_1h}/{rsi_4h} | {señal_15m}/{señal_1h}/{señal_4h} | {confianza}%")
 
-                elif ambos_bajistas and suficiente_fuerza and rsi_alto and tendencia_bajista:
-                    confianza = min(99, int((fuerza_total / 12) * 100))
+                elif señales_venta >= 2 and fuerza_minima and rsi_alto and tendencia_bajista:
+                    confianza = min(99, int((abs(fuerza_total) / 15) * 100))
                     mejores.append({
                         "par":        par,
                         "analisis":   analisis_1h,
@@ -180,27 +202,21 @@ class Motor:
                         "fuerza":     fuerza_total,
                         "confianza":  confianza,
                     })
-                    print(f"[VENTA] {par}: Fuerza={fuerza_total} | RSI={rsi_1h}/{rsi_4h} | Confianza={confianza}%")
+                    print(f"[VENTA] {par}: F={fuerza_total} | RSI={rsi_1h}/{rsi_4h} | {señal_15m}/{señal_1h}/{señal_4h} | {confianza}%")
+
                 else:
-                    motivo = []
-                    if not ambos_alcistas and not ambos_bajistas:
-                        motivo.append(f"señales ({señal_1h}/{señal_4h})")
-                    if not suficiente_fuerza:
-                        motivo.append(f"fuerza baja ({fuerza_total}/6)")
-                    if not tendencia_ok and not tendencia_bajista:
-                        motivo.append(f"tendencia {analisis_4h['tendencia']}")
-                    print(f"[SKIP] {par}: {' | '.join(motivo)}")
+                    print(f"[SKIP] {par}: {señal_15m}/{señal_1h}/{señal_4h} | F={fuerza_total}")
 
             except Exception as e:
                 print(f"[WARNING] Error analizando {par}: {e}")
 
         if not mejores:
-            print("[INFO] Sin oportunidades de alta confianza en este ciclo")
+            print("[INFO] Sin oportunidades en este ciclo")
             return None
 
         mejores.sort(key=lambda x: x["fuerza"], reverse=True)
         elegido = mejores[0]
-        print(f"[OK] Mejor: {elegido['par']} | {elegido['lado'].upper()} | Confianza: {elegido['confianza']}%")
+        print(f"[OK] Mejor: {elegido['par']} | {elegido['lado'].upper()} | {elegido['confianza']}%")
         return elegido
 
     async def ejecutar_trade(self, oportunidad):
@@ -222,7 +238,7 @@ class Motor:
             print(f"[WARNING] Balance insuficiente: ${balance:.2f}")
             return
 
-        precio      = self.okx.get_price(par)
+        precio = self.okx.get_price(par)
         if lado == "buy":
             stop_loss   = precio * (1 - STOP_LOSS_PCT)
             take_profit = precio * (1 + TAKE_PROFIT_PCT)
@@ -321,8 +337,8 @@ class Motor:
                 print(f"[INFO] Cerrando {par}: {razon} | PnL: {pnl_usdt:.2f} USDT")
                 resultado = self.okx.place_market_order(par, lado_cierre, op["tamaño_usdt"])
                 if resultado["ok"]:
-                    self.pnl_hoy   += pnl_usdt
-                    self.pnl_total += pnl_usdt
+                    self.pnl_hoy         += pnl_usdt
+                    self.pnl_total       += pnl_usdt
                     if pnl_usdt >= 0:
                         self.trades_ganados += 1
                     else:
