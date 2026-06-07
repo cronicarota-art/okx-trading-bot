@@ -54,16 +54,19 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_estado(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not autorizado(update.effective_user.id):
         return
-    estado = "ACTIVO" if bot_estado["activo"] else ("PAUSADO" if bot_estado["pausado"] else "INACTIVO")
-    pnl    = bot_estado["pnl_hoy"]
+    motor  = bot_estado.get("motor")
+    estado = "ACTIVO" if (motor and motor.activo) else ("PAUSADO" if bot_estado["pausado"] else "INACTIVO")
+    pnl    = motor.pnl_hoy if motor else 0.0
+    bal    = motor.okx.get_total_balance_usdt() if motor and motor.okx else bot_estado["balance"]
+    ops    = len(motor.operaciones) if motor else 0
     texto  = (
         f"*Estado del Bot* | {modo_badge()}\n\n"
         f"Estado: {estado}\n"
-        f"Balance: ${bot_estado['balance']:,.2f} USDT\n"
+        f"Balance total: ${bal:,.2f} USDT\n"
         f"PnL hoy: {'+'if pnl>=0 else ''}{pnl:.2f} USDT\n"
         f"PnL total: {'+'if bot_estado['pnl_total']>=0 else ''}{bot_estado['pnl_total']:.2f} USDT\n"
-        f"Trades hoy: {bot_estado['trades_hoy']}\n"
-        f"Posiciones abiertas: {len(bot_estado['operaciones'])}\n\n"
+        f"Trades hoy: {motor.trades_hoy if motor else 0}\n"
+        f"Posiciones abiertas: {ops}\n\n"
         f"{datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"
     )
     teclado = [[
@@ -87,15 +90,20 @@ async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not okx:
             from core.okx_connector import OKXConnector
             okx = OKXConnector()
-        balance_completo = okx.get_full_balance()
-        balance_usdt     = okx.get_balance("USDT")
-        if not balance_completo:
-            await msg.reply_text("No se pudo obtener el balance. Verifica tus API keys.")
-            return
+
+        balance_usdt  = okx.get_balance("USDT")
+        balance_total = okx.get_total_balance_usdt()
+        posiciones    = okx.get_posiciones_abiertas()
+
         lineas = [f"*Balance OKX* | {modo_badge()}\n"]
-        for moneda, datos in balance_completo.items():
-            lineas.append(f"*{moneda}*: {datos['disponible']:.6f} disponible")
-        lineas.append(f"\nUSDT disponible: ${balance_usdt:,.2f}")
+        lineas.append(f"USDT disponible: *${balance_usdt:,.2f}*")
+        lineas.append(f"Valor total cuenta: *${balance_total:,.2f} USDT*\n")
+
+        if posiciones:
+            lineas.append("*Posiciones abiertas:*")
+            for p in posiciones:
+                lineas.append(f"• {p['ccy']}: {p['cantidad']:.4f} = *${p['valor_usdt']:.2f} USDT*")
+
         bot_estado["balance"] = balance_usdt
         await msg.reply_text("\n".join(lineas), parse_mode="Markdown")
     except Exception as e:
@@ -105,7 +113,8 @@ async def cmd_iniciar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not autorizado(update.effective_user.id):
         return
     msg = update.message or update.callback_query.message
-    if bot_estado["activo"]:
+    motor = bot_estado.get("motor")
+    if motor and motor.activo:
         await msg.reply_text("El bot ya esta activo.")
         return
     bot_estado["activo"]  = True
@@ -116,7 +125,6 @@ async def cmd_iniciar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Analizando mercado...",
         parse_mode="Markdown"
     )
-    motor = bot_estado.get("motor")
     if motor:
         asyncio.create_task(motor.iniciar())
 
@@ -145,21 +153,38 @@ async def cmd_detener(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_operaciones(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not autorizado(update.effective_user.id):
         return
-    msg = update.message or update.callback_query.message
+    msg   = update.message or update.callback_query.message
     motor = bot_estado.get("motor")
-    ops   = motor.operaciones if motor else []
-    if not ops:
+    okx   = bot_estado.get("okx")
+
+    # Operaciones del motor
+    ops_motor = motor.operaciones if motor else []
+
+    # Posiciones reales en OKX
+    posiciones_reales = okx.get_posiciones_abiertas() if okx else []
+
+    if not ops_motor and not posiciones_reales:
         await msg.reply_text("No hay posiciones abiertas actualmente.")
         return
-    lineas = [f"*Operaciones abiertas* ({len(ops)})\n"]
-    for i, op in enumerate(ops, 1):
-        pnl = op.get("pnl_actual", 0)
-        lineas.append(
-            f"#{i} {op['par']} - {op['lado'].upper()}\n"
-            f"Entrada: ${op['precio_entrada']:,.4f}\n"
-            f"PnL: {'+'if pnl>=0 else ''}{pnl:.2f} USDT\n"
-            f"Confianza: {op.get('confianza', 0)}%\n"
-        )
+
+    lineas = []
+
+    if ops_motor:
+        lineas.append(f"*Operaciones del bot* ({len(ops_motor)})\n")
+        for i, op in enumerate(ops_motor, 1):
+            pnl = op.get("pnl_actual", 0)
+            lineas.append(
+                f"#{i} {op['par']} - {op['lado'].upper()}\n"
+                f"Entrada: ${op['precio_entrada']:,.4f}\n"
+                f"PnL: {'+'if pnl>=0 else ''}{pnl:.2f} USDT\n"
+                f"Confianza: {op.get('confianza', 0)}%\n"
+            )
+
+    if posiciones_reales:
+        lineas.append(f"\n*Posiciones en OKX* ({len(posiciones_reales)})\n")
+        for p in posiciones_reales:
+            lineas.append(f"• {p['ccy']}: {p['cantidad']:.4f} = ${p['valor_usdt']:.2f} USDT")
+
     await msg.reply_text("\n".join(lineas), parse_mode="Markdown")
 
 async def cmd_historial(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -189,20 +214,33 @@ async def cmd_historial(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_rendimiento(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not autorizado(update.effective_user.id):
         return
-    msg = update.message or update.callback_query.message
-    motor     = bot_estado.get("motor")
+    msg   = update.message or update.callback_query.message
+    motor = bot_estado.get("motor")
+    okx   = bot_estado.get("okx")
+
     pnl_total = bot_estado["pnl_total"]
     pnl_hoy   = motor.pnl_hoy if motor else 0.0
     trades    = motor.trades_hoy if motor else 0
-    roi       = (pnl_total / CAPITAL_TOTAL_USD) * 100
+    ganados   = motor.trades_ganados if motor else 0
+    perdidos  = motor.trades_perdidos if motor else 0
+    balance_total = okx.get_total_balance_usdt() if okx else 0.0
+    roi       = ((balance_total - CAPITAL_TOTAL_USD) / CAPITAL_TOTAL_USD) * 100
+
+    winrate = 0
+    if (ganados + perdidos) > 0:
+        winrate = int((ganados / (ganados + perdidos)) * 100)
+
     await msg.reply_text(
         f"*Rendimiento del Bot*\n\n"
         f"PnL hoy: {'+'if pnl_hoy>=0 else ''}{pnl_hoy:.2f} USDT\n"
         f"PnL total: {'+'if pnl_total>=0 else ''}{pnl_total:.2f} USDT\n"
-        f"ROI: {'+'if roi>=0 else ''}{roi:.2f}%\n"
+        f"ROI: {'+'if roi>=0 else ''}{roi:.2f}%\n\n"
         f"Trades hoy: {trades}\n"
-        f"Capital: ${CAPITAL_TOTAL_USD:,.2f}\n"
-        f"Balance actual: ${bot_estado['balance']:,.2f}",
+        f"Ganados: {ganados}\n"
+        f"Perdidos: {perdidos}\n"
+        f"Winrate: {winrate}%\n\n"
+        f"Capital inicial: ${CAPITAL_TOTAL_USD:,.2f}\n"
+        f"Balance total actual: ${balance_total:,.2f}",
         parse_mode="Markdown"
     )
 

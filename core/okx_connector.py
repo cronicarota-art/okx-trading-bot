@@ -90,6 +90,14 @@ class OKXConnector:
             pass
         return balances
 
+    def get_total_balance_usdt(self):
+        """Retorna el valor total de la cuenta en USDT incluyendo todas las monedas."""
+        resp = self._request("GET", "/api/v5/account/balance")
+        try:
+            return float(resp["data"][0]["totalEq"])
+        except Exception:
+            return self.get_balance("USDT")
+
     def get_price(self, par):
         resp = self._request("GET", "/api/v5/market/ticker", params={"instId": par})
         try:
@@ -132,27 +140,66 @@ class OKXConnector:
         except Exception:
             return {}
 
+    def get_instrument_info(self, par):
+        """Obtiene info del par: tamaño mínimo, lot size, tick size."""
+        resp = self._request("GET", "/api/v5/public/instruments",
+                             params={"instType": "SPOT", "instId": par})
+        try:
+            return resp["data"][0]
+        except Exception:
+            return {}
+
     def place_market_order(self, par, lado, cantidad_usdt):
         precio = self.get_price(par)
         if precio == 0:
             return {"ok": False, "error": "No se pudo obtener precio"}
-        cantidad = round(cantidad_usdt / precio, 6)
+
+        # Obtener info del instrumento
+        info    = self.get_instrument_info(par)
+        min_sz  = float(info.get("minSz", "0.000001"))
+        lot_sz  = float(info.get("lotSz", "0.000001"))
+
+        # Calcular cantidad en crypto
+        cantidad_crypto = cantidad_usdt / precio
+
+        # Redondear al lot size correcto
+        if lot_sz >= 1:
+            cantidad_crypto = round(cantidad_crypto / lot_sz) * lot_sz
+            cantidad_crypto = int(cantidad_crypto)
+        else:
+            decimales = len(str(lot_sz).rstrip('0').split('.')[-1]) if '.' in str(lot_sz) else 0
+            cantidad_crypto = round(cantidad_crypto, decimales)
+
+        # Verificar mínimo
+        if cantidad_crypto < min_sz:
+            cantidad_crypto = min_sz
+
+        # Verificar que el valor en USDT sea suficiente
+        valor_usdt = cantidad_crypto * precio
+        if valor_usdt < 1.0:
+            return {"ok": False, "error": f"Orden muy pequeña: ${valor_usdt:.4f} USDT"}
+
         data = {
             "instId":  par,
             "tdMode":  "cash",
             "side":    lado,
             "ordType": "market",
-            "sz":      str(cantidad),
+            "sz":      str(cantidad_crypto),
         }
-        print(f"[INFO] Orden: {lado.upper()} {cantidad} {par} (~${cantidad_usdt:.2f})")
+
+        print(f"[INFO] Orden: {lado.upper()} {cantidad_crypto} {par} (~${valor_usdt:.2f} USDT)")
         resp = self._request("POST", "/api/v5/trade/order", data=data)
+
         try:
             if resp["code"] == "0":
                 orden_id = resp["data"][0]["ordId"]
                 print(f"[OK] Orden ejecutada. ID: {orden_id}")
-                return {"ok": True, "orden_id": orden_id, "precio_ref": precio}
+                return {"ok": True, "orden_id": orden_id, "precio_ref": precio,
+                        "cantidad_crypto": cantidad_crypto}
             else:
                 error = resp.get("msg", "Error desconocido")
+                if resp.get("data"):
+                    error = resp["data"][0].get("sMsg", error)
                 print(f"[ERROR] Error en orden: {error}")
                 return {"ok": False, "error": error}
         except Exception as e:
@@ -178,12 +225,38 @@ class OKXConnector:
             pass
         return historial
 
+    def get_posiciones_abiertas(self):
+        """Obtiene todas las posiciones abiertas en spot."""
+        resp = self._request("GET", "/api/v5/account/balance")
+        posiciones = []
+        try:
+            for detail in resp["data"][0]["details"]:
+                ccy   = detail["ccy"]
+                total = float(detail["cashBal"])
+                if ccy != "USDT" and total > 0:
+                    par    = f"{ccy}-USDT"
+                    precio = self.get_price(par)
+                    if precio > 0:
+                        valor_usdt = total * precio
+                        if valor_usdt > 0.5:
+                            posiciones.append({
+                                "ccy":        ccy,
+                                "par":        par,
+                                "cantidad":   total,
+                                "precio":     precio,
+                                "valor_usdt": valor_usdt,
+                            })
+        except Exception:
+            pass
+        return posiciones
+
     def test_connection(self):
         print("[INFO] Probando conexion con OKX...")
         try:
-            balance = self.get_balance()
-            modo = "DEMO" if self.demo_mode else "REAL"
-            print(f"[OK] Conexion exitosa | Modo: {modo} | Balance USDT: ${balance:.2f}")
+            balance       = self.get_balance()
+            balance_total = self.get_total_balance_usdt()
+            modo          = "DEMO" if self.demo_mode else "REAL"
+            print(f"[OK] Conexion exitosa | Modo: {modo} | USDT: ${balance:.2f} | Total: ${balance_total:.2f}")
             return True
         except Exception as e:
             print(f"[ERROR] Error de conexion: {e}")
