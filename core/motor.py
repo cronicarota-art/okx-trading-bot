@@ -11,7 +11,7 @@ from config.settings import (
 from utils.indicators import Indicators
 from utils.database import Database
 
-PARES_PRINCIPALES = ["BTC-USDT", "ETH-USDT", "SOL-USDT"]
+PARES_PRINCIPALES = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "DOGE-USDT"]
 
 
 class Motor:
