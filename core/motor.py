@@ -38,8 +38,7 @@ class Motor:
             f"*Motor de trading activo*\n\n"
             f"Balance: ${balance:.2f} USDT\n"
             f"Estrategia: Grid + Trend + RSI\n"
-            f"Pares: BTC, ETH, SOL\n"
-            f"Capital por par: ~${balance/3:.2f} USDT\n"
+            f"Pares: BTC, ETH, SOL, XRP, DOGE\n"
             f"Stop Loss: {STOP_LOSS_PCT*100:.1f}% | Take Profit: {TAKE_PROFIT_PCT*100:.1f}%\n"
             f"Trailing Stop: {TRAILING_PCT*100:.1f}%\n"
             f"Revision cada 15 minutos"
@@ -76,8 +75,8 @@ class Motor:
         if balance_usdt < MIN_ORDER_USDT:
             print(f"[INFO] USDT insuficiente: ${balance_usdt:.2f}")
             return False
-        total        = self.okx.get_total_balance_usdt()
-        perdida_pct  = abs(self.pnl_hoy) / max(total, 1)
+        total       = self.okx.get_total_balance_usdt()
+        perdida_pct = abs(self.pnl_hoy) / max(total, 1)
         if self.pnl_hoy < 0 and perdida_pct > MAX_DAILY_LOSS:
             print(f"[WARNING] Limite perdida diaria ({perdida_pct*100:.1f}%)")
             self.activo = False
@@ -89,7 +88,7 @@ class Motor:
             return False
         return True
 
-    def calcular_tamano(self, par):
+    def calcular_tamano(self):
         balance_usdt = self.okx.get_balance("USDT")
         pares_libres = len([p for p in PARES_PRINCIPALES
                             if p not in [op["par"] for op in self.operaciones]])
@@ -126,8 +125,8 @@ class Motor:
             return
 
         candidatos.sort(key=lambda x: x["score"], reverse=True)
-        mejor = candidatos[0]
-        tamano = self.calcular_tamano(mejor["par"])
+        mejor  = candidatos[0]
+        tamano = self.calcular_tamano()
         if tamano > 0:
             await self.ejecutar_compra(mejor, tamano)
 
@@ -166,7 +165,7 @@ class Motor:
         tipo  = ""
         razon = []
 
-        # ESTRATEGIA 1: RSI sobreventa — mejor señal de rebote
+        # ESTRATEGIA 1: RSI sobreventa
         if rsi_1h < 28:
             score += 50
             tipo   = "RSI_SOBREVENTA_EXTREMA"
@@ -205,7 +204,7 @@ class Motor:
             score += 8
             razon.append("MACD positivo")
 
-        # ESTRATEGIA 4: Tendencia alcista con momentum
+        # ESTRATEGIA 4: Tendencia con momentum
         if tendencia == "ALCISTA" and compras_count >= 2:
             score += 25
             tipo   = tipo or "TREND_FOLLOWING"
@@ -214,7 +213,7 @@ class Motor:
             score += 15
             razon.append("Tendencia lateral con compras")
 
-        # ESTRATEGIA 5: Confirmacion multitimeframe
+        # ESTRATEGIA 5: Multitimeframe
         if compras_count == 3:
             score += 25
             razon.append("3 timeframes alineados")
@@ -223,19 +222,16 @@ class Motor:
             razon.append("2 timeframes alineados")
 
         # FILTROS DE PROTECCION
-        if rsi_1h > 70:
-            score -= 40
-        if rsi_4h > 72:
-            score -= 25
-        # Bajista sin sobreventa = riesgo alto
-        if tendencia == "BAJISTA" and rsi_1h > 45:
+        if rsi_1h > 72:
+            score -= 35
+        if rsi_4h > 75:
             score -= 20
-        # RSI muy alto en bajista = no operar
-        if tendencia == "BAJISTA" and rsi_1h > 60:
-            score -= 30
+        # En bajista sin ninguna señal de compra no operar
+        if tendencia == "BAJISTA" and compras_count == 0:
+            score -= 40
 
         # Score minimo para operar
-        if score < 20 or not tipo:
+        if score < 15 or not tipo:
             return None
 
         return {
