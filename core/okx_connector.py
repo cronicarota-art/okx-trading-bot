@@ -67,7 +67,6 @@ class OKXConnector:
                 time.sleep(2 ** intento)
         return {"code": "-1", "msg": "Max reintentos", "data": []}
 
-    # ── BALANCE ──────────────────────────────────────────
     def get_balance(self, currency="USDT"):
         resp = self._request("GET", "/api/v5/account/balance")
         try:
@@ -124,7 +123,6 @@ class OKXConnector:
             pass
         return posiciones
 
-    # ── PRECIOS Y MERCADO ────────────────────────────────
     def get_price(self, par):
         resp = self._request("GET", "/api/v5/market/ticker", params={"instId": par})
         try:
@@ -165,7 +163,6 @@ class OKXConnector:
             pass
         return velas
 
-    # ── INSTRUMENTOS ─────────────────────────────────────
     def get_instrument_info(self, par):
         if par in self._instrument_cache:
             return self._instrument_cache[par]
@@ -178,61 +175,27 @@ class OKXConnector:
         except Exception:
             return {}
 
-    def calcular_cantidad(self, par, cantidad_usdt):
+    def place_market_order(self, par, lado, cantidad_usdt):
         """
-        Calcula la cantidad correcta de crypto para una orden,
-        respetando el lot size y el mínimo de OKX.
-        Retorna (cantidad_crypto, valor_usdt_real) o (None, error)
+        Ejecuta orden de mercado especificando el monto en USDT directamente.
+        Usa tgtCcy=quote_ccy para que OKX calcule la cantidad de crypto.
         """
         precio = self.get_price(par)
         if precio == 0:
-            return None, "No se pudo obtener precio"
+            return {"ok": False, "error": "No se pudo obtener precio"}
 
-        info   = self.get_instrument_info(par)
-        min_sz = float(info.get("minSz", "0.000001"))
-        lot_sz = float(info.get("lotSz", "0.000001"))
-
-        cantidad_raw = cantidad_usdt / precio
-
-        # Redondear al lot size
-        if lot_sz >= 1:
-            cantidad = max(round(cantidad_raw / lot_sz) * lot_sz, lot_sz)
-            cantidad = int(cantidad)
-        else:
-            import math
-            decimales = max(0, -int(math.floor(math.log10(lot_sz))))
-            cantidad  = round(math.floor(cantidad_raw / lot_sz) * lot_sz, decimales)
-
-        # Verificar mínimo
-        if cantidad < min_sz:
-            cantidad = min_sz
-
-        valor_real = cantidad * precio
-
-        # Verificar que el valor sea suficiente
-        if valor_real < 1.0:
-            return None, f"Valor insuficiente: ${valor_real:.4f} USDT (minimo $1)"
-
-        return cantidad, valor_real
-
-    # ── ÓRDENES ──────────────────────────────────────────
-    def place_market_order(self, par, lado, cantidad_usdt):
-        cantidad, resultado = self.calcular_cantidad(par, cantidad_usdt)
-        if cantidad is None:
-            return {"ok": False, "error": resultado}
-
-        precio     = self.get_price(par)
-        valor_real = cantidad * precio
+        sz = str(round(float(cantidad_usdt), 2))
 
         data = {
             "instId":  par,
             "tdMode":  "cash",
             "side":    lado,
             "ordType": "market",
-            "sz":      str(cantidad),
+            "sz":      sz,
+            "tgtCcy":  "quote_ccy",
         }
 
-        print(f"[INFO] Orden {lado.upper()}: {cantidad} {par} = ~${valor_real:.2f} USDT")
+        print(f"[INFO] Orden {lado.upper()}: ${cantidad_usdt:.2f} USDT en {par}")
         resp = self._request("POST", "/api/v5/trade/order", data=data)
 
         try:
@@ -240,11 +203,10 @@ class OKXConnector:
                 orden_id = resp["data"][0]["ordId"]
                 print(f"[OK] Orden ejecutada ID: {orden_id}")
                 return {
-                    "ok":               True,
-                    "orden_id":         orden_id,
-                    "precio_ref":       precio,
-                    "cantidad_crypto":  cantidad,
-                    "valor_usdt":       valor_real,
+                    "ok":         True,
+                    "orden_id":   orden_id,
+                    "precio_ref": precio,
+                    "valor_usdt": cantidad_usdt,
                 }
             else:
                 error = resp.get("msg", "Error desconocido")
@@ -275,12 +237,17 @@ class OKXConnector:
         if cantidad < min_sz:
             return {"ok": False, "error": f"Cantidad insuficiente: {balance} {ccy}"}
 
+        if cantidad < 0.001:
+            sz_str = f"{cantidad:.8f}".rstrip('0')
+        else:
+            sz_str = str(cantidad)
+
         data = {
             "instId":  par,
             "tdMode":  "cash",
             "side":    "sell",
             "ordType": "market",
-            "sz":      str(cantidad),
+            "sz":      sz_str,
         }
 
         print(f"[INFO] Venta total: {cantidad} {ccy}")
@@ -298,7 +265,6 @@ class OKXConnector:
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
-    # ── HISTORIAL ────────────────────────────────────────
     def get_order_history(self, limite=20):
         params = {"instType": "SPOT", "limit": str(limite)}
         resp   = self._request("GET", "/api/v5/trade/orders-history", params=params)
@@ -319,7 +285,6 @@ class OKXConnector:
             pass
         return result
 
-    # ── TEST ─────────────────────────────────────────────
     def test_connection(self):
         print("[INFO] Probando conexion con OKX...")
         try:
