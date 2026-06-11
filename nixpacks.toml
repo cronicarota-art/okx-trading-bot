@@ -1,5 +1,1 @@
-[phases.setup]
-nixPkgs = ["python311"]
-
-[start]
-cmd = "python main.py"
+python-3.13.14 
