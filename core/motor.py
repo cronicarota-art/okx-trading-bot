@@ -11,8 +11,8 @@ from config.settings import (
 from utils.indicators import Indicators
 from utils.database import Database
 
-# Pares principales — los más líquidos y rentables
 PARES_PRINCIPALES = ["BTC-USDT", "ETH-USDT", "SOL-USDT"]
+
 
 class Motor:
 
@@ -50,7 +50,7 @@ class Motor:
             except Exception as e:
                 print(f"[ERROR] Ciclo: {e}")
                 await self.notifier.enviar(f"*Error en ciclo*\n`{e}`")
-            await asyncio.sleep(900)  # cada 15 minutos
+            await asyncio.sleep(900)
 
     async def ciclo(self):
         self.ciclo_num += 1
@@ -58,18 +58,14 @@ class Motor:
         print(f"\n{'='*50}")
         print(f"[CICLO #{self.ciclo_num}] {ahora.strftime('%d/%m/%Y %H:%M:%S')}")
 
-        # 1. Monitorear posiciones abiertas
         await self.monitorear_posiciones()
 
-        # 2. Buscar oportunidades
         if self.puede_abrir_trade():
             await self.escanear_y_operar()
 
-        # 3. Reporte cada hora (cada 4 ciclos de 15min)
         if self.ciclo_num % 4 == 0:
             await self.enviar_reporte()
 
-        # 4. Reporte diario a las 9am
         if ahora.hour == 9 and ahora.minute < 15:
             await self.reporte_diario()
 
@@ -80,8 +76,8 @@ class Motor:
         if balance_usdt < MIN_ORDER_USDT:
             print(f"[INFO] USDT insuficiente: ${balance_usdt:.2f}")
             return False
-        total       = self.okx.get_total_balance_usdt()
-        perdida_pct = abs(self.pnl_hoy) / max(total, 1)
+        total        = self.okx.get_total_balance_usdt()
+        perdida_pct  = abs(self.pnl_hoy) / max(total, 1)
         if self.pnl_hoy < 0 and perdida_pct > MAX_DAILY_LOSS:
             print(f"[WARNING] Limite perdida diaria ({perdida_pct*100:.1f}%)")
             self.activo = False
@@ -94,14 +90,12 @@ class Motor:
         return True
 
     def calcular_tamano(self, par):
-        """Calcula el tamaño óptimo por par — divide el capital disponible."""
-        balance_usdt   = self.okx.get_balance("USDT")
-        pares_libres   = len([p for p in PARES_PRINCIPALES
-                               if p not in [op["par"] for op in self.operaciones]])
+        balance_usdt = self.okx.get_balance("USDT")
+        pares_libres = len([p for p in PARES_PRINCIPALES
+                            if p not in [op["par"] for op in self.operaciones]])
         if pares_libres == 0:
             return 0
-        # Distribuir el USDT disponible entre los pares libres
-        por_par = balance_usdt / pares_libres
+        por_par = balance_usdt / max(pares_libres, 1)
         tamano  = min(por_par * 0.90, balance_usdt * 0.90)
         if tamano < MIN_ORDER_USDT:
             if balance_usdt >= MIN_ORDER_USDT:
@@ -111,22 +105,19 @@ class Motor:
         return round(tamano, 2)
 
     async def escanear_y_operar(self):
-        """Escanea los 3 pares principales y opera el mejor."""
         print(f"[SCAN] Analizando BTC, ETH, SOL...")
         candidatos = []
 
         for par in PARES_PRINCIPALES:
-            # Saltar si ya hay posición abierta en este par
             if par in [op["par"] for op in self.operaciones]:
                 print(f"  {par}: posicion abierta")
                 continue
-
             try:
                 señal = self.analizar_par(par)
                 if señal:
                     candidatos.append(señal)
                     print(f"  [SIGNAL] {par}: {señal['tipo']} | "
-                          f"RSI={señal['rsi']:.0f} | Score={señal['score']:.1f}")
+                          f"RSI={señal['rsi']:.0f} | Score={señal['score']:.0f}")
             except Exception as e:
                 print(f"  [ERROR] {par}: {e}")
 
@@ -134,7 +125,6 @@ class Motor:
             print("[INFO] Sin señales en este ciclo")
             return
 
-        # Ejecutar el mejor candidato
         candidatos.sort(key=lambda x: x["score"], reverse=True)
         mejor = candidatos[0]
         tamano = self.calcular_tamano(mejor["par"])
@@ -142,11 +132,6 @@ class Motor:
             await self.ejecutar_compra(mejor, tamano)
 
     def analizar_par(self, par):
-        """
-        Analiza un par con múltiples estrategias y retorna
-        la mejor señal de compra disponible.
-        """
-        # Obtener velas en 3 timeframes
         velas_15m = self.okx.get_candles(par, "15m", 100)
         velas_1h  = self.okx.get_candles(par, "1H",  100)
         velas_4h  = self.okx.get_candles(par, "4H",  60)
@@ -167,7 +152,6 @@ class Motor:
         tendencia = a4h["tendencia"]
         boll_1h   = a1h["bollinger"]
         macd_1h   = a1h["macd"]
-
         señal_15m = a15m["señal"]
         señal_1h  = a1h["señal"]
         señal_4h  = a4h["señal"]
@@ -182,65 +166,76 @@ class Motor:
         tipo  = ""
         razon = []
 
-        # ── ESTRATEGIA 1: RSI en sobreventa extrema (rebote garantizado) ──
-        if rsi_1h < 30:
-            score += 40
-            tipo   = "RSI_SOBREVENTA"
+        # ESTRATEGIA 1: RSI sobreventa — mejor señal de rebote
+        if rsi_1h < 28:
+            score += 50
+            tipo   = "RSI_SOBREVENTA_EXTREMA"
             razon.append(f"RSI 1H extremo: {rsi_1h:.0f}")
-        elif rsi_1h < 38:
-            score += 25
+        elif rsi_1h < 35:
+            score += 35
+            tipo   = "RSI_SOBREVENTA"
+            razon.append(f"RSI 1H sobreventa: {rsi_1h:.0f}")
+        elif rsi_1h < 42:
+            score += 20
             tipo   = "RSI_BAJO"
             razon.append(f"RSI 1H bajo: {rsi_1h:.0f}")
 
-        # RSI 15m también bajo añade confianza
-        if rsi_15m < 35:
-            score += 15
+        if rsi_15m < 30:
+            score += 20
+            razon.append(f"RSI 15m sobreventa: {rsi_15m:.0f}")
+        elif rsi_15m < 40:
+            score += 10
             razon.append(f"RSI 15m bajo: {rsi_15m:.0f}")
 
-        # ── ESTRATEGIA 2: Precio en banda inferior de Bollinger ──
+        # ESTRATEGIA 2: Bollinger inferior
         if boll_1h["posicion"] == "SOBREVENTA":
             score += 30
             tipo   = tipo or "BOLLINGER_INFERIOR"
             razon.append("Precio en banda inferior Bollinger")
         elif boll_1h["posicion"] == "ZONA_BAJA":
             score += 15
-            razon.append("Precio en zona baja Bollinger")
+            razon.append("Precio zona baja Bollinger")
 
-        # ── ESTRATEGIA 3: MACD cruce alcista ──
+        # ESTRATEGIA 3: MACD cruce alcista
         if macd_1h.get("cruce_alcista"):
             score += 25
             tipo   = tipo or "MACD_CRUCE"
             razon.append("MACD cruce alcista")
         elif macd_1h.get("macd", 0) > macd_1h.get("signal", 0):
-            score += 10
+            score += 8
             razon.append("MACD positivo")
 
-        # ── ESTRATEGIA 4: Tendencia alcista con momentum ──
+        # ESTRATEGIA 4: Tendencia alcista con momentum
         if tendencia == "ALCISTA" and compras_count >= 2:
-            score += 20
+            score += 25
             tipo   = tipo or "TREND_FOLLOWING"
-            razon.append(f"Tendencia alcista confirmada")
+            razon.append("Tendencia alcista confirmada")
+        elif tendencia == "LATERAL" and compras_count >= 2:
+            score += 15
+            razon.append("Tendencia lateral con compras")
 
-        # ── ESTRATEGIA 5: Confirmación múltiple timeframes ──
+        # ESTRATEGIA 5: Confirmacion multitimeframe
         if compras_count == 3:
-            score += 20
+            score += 25
             razon.append("3 timeframes alineados")
         elif compras_count == 2:
-            score += 10
+            score += 12
             razon.append("2 timeframes alineados")
 
-        # ── FILTROS DE SEGURIDAD ──
-        # No comprar si RSI muy alto (sobrecomprado)
-        if rsi_1h > 72:
-            score -= 50
-        if rsi_4h > 75:
-            score -= 30
-        # No comprar si tendencia bajista fuerte sin RSI bajo
+        # FILTROS DE PROTECCION
+        if rsi_1h > 70:
+            score -= 40
+        if rsi_4h > 72:
+            score -= 25
+        # Bajista sin sobreventa = riesgo alto
         if tendencia == "BAJISTA" and rsi_1h > 45:
             score -= 20
+        # RSI muy alto en bajista = no operar
+        if tendencia == "BAJISTA" and rsi_1h > 60:
+            score -= 30
 
-        # Mínimo score para operar
-        if score < 25 or not tipo:
+        # Score minimo para operar
+        if score < 20 or not tipo:
             return None
 
         return {
@@ -330,7 +325,6 @@ class Motor:
             print(f"  {par}: ${precio_actual:,.4f} | "
                   f"PnL: {pnl_usdt:+.2f} USDT ({pnl_pct*100:+.2f}%)")
 
-            # Trailing stop — asegurar ganancias
             if precio_actual > op["trailing_max"]:
                 op["trailing_max"] = precio_actual
                 nuevo_sl = precio_actual * (1 - TRAILING_PCT)
@@ -338,7 +332,6 @@ class Motor:
                     op["stop_loss"] = nuevo_sl
                     print(f"  [TRAIL] {par}: SL -> ${nuevo_sl:,.4f}")
 
-            # Verificar si cerrar
             cerrar = False
             razon  = ""
             if precio_actual <= op["stop_loss"]:
