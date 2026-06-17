@@ -1,6 +1,6 @@
 import sys
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 
@@ -12,157 +12,262 @@ PANEL_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>OKX Trading Bot</title>
+<title>OKX Trading Bot — Dashboard</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:#0a0e1a;color:#e0e6f0;font-family:'Segoe UI',sans-serif}
-.header{background:#111827;padding:20px 30px;border-bottom:1px solid #1f2937;display:flex;justify-content:space-between;align-items:center}
-.header h1{font-size:22px;color:#00d4aa;font-weight:700}
-.badge{background:#f5a62322;color:#f5a623;padding:4px 12px;border-radius:20px;font-size:13px;border:1px solid #f5a62344}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;padding:24px 30px}
+body{background:#0a0e1a;color:#e0e6f0;font-family:'Segoe UI',sans-serif;min-height:100vh}
+.header{background:#111827;padding:16px 24px;border-bottom:1px solid #1f2937;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:100}
+.header h1{font-size:20px;color:#00d4aa;font-weight:700;display:flex;align-items:center;gap:8px}
+.dot{width:8px;height:8px;border-radius:50%;background:#00d4aa;animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}}
+.badge{padding:4px 12px;border-radius:20px;font-size:12px;font-weight:600}
+.badge-real{background:#f5a62322;color:#f5a623;border:1px solid #f5a62344}
+.badge-activo{background:#00d4aa22;color:#00d4aa;border:1px solid #00d4aa44}
+.badge-inactivo{background:#ef444422;color:#ef4444;border:1px solid #ef444444}
+.grid-4{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;padding:20px 24px}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:0 24px 20px}
+.grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;padding:0 24px 20px}
 .card{background:#111827;border-radius:12px;padding:20px;border:1px solid #1f2937}
-.card .label{font-size:12px;color:#6b7280;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px}
-.card .value{font-size:26px;font-weight:700;color:#fff}
-.green{color:#00d4aa !important}.red{color:#ef4444 !important}.yellow{color:#f5a623 !important}
-.section{padding:0 30px 24px}
-.section h2{font-size:16px;color:#9ca3af;margin-bottom:16px;text-transform:uppercase;letter-spacing:1px;display:flex;justify-content:space-between;align-items:center}
+.card-title{font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:1px;margin-bottom:10px}
+.card-value{font-size:28px;font-weight:700}
+.card-sub{font-size:12px;color:#6b7280;margin-top:4px}
+.green{color:#00d4aa}.red{color:#ef4444}.yellow{color:#f5a623}.white{color:#fff}
+.section{padding:0 24px 20px}
+.section-title{font-size:13px;color:#9ca3af;text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center}
 .table{width:100%;border-collapse:collapse;background:#111827;border-radius:12px;overflow:hidden;border:1px solid #1f2937}
-.table th{background:#1f2937;padding:12px 16px;text-align:left;font-size:12px;color:#6b7280;text-transform:uppercase}
-.table td{padding:12px 16px;border-top:1px solid #1f2937;font-size:13px}
-.pill{padding:3px 10px;border-radius:20px;font-size:12px;font-weight:600}
-.pill.buy{background:#00d4aa22;color:#00d4aa}
-.pill.sell{background:#ef444422;color:#ef4444}
-.pares-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}
-.par-card{background:#111827;border:1px solid #1f2937;border-radius:10px;padding:12px;text-align:center}
-.par-nombre{font-size:11px;color:#9ca3af;margin-bottom:4px}
-.par-precio{font-size:15px;font-weight:700;color:#fff}
-.par-cambio{font-size:11px;margin-top:3px}
-.pos{color:#00d4aa}.neg{color:#ef4444}
-.btn{padding:8px 18px;border-radius:8px;border:none;cursor:pointer;font-size:13px;font-weight:600;transition:all 0.2s}
+.table th{background:#1f2937;padding:10px 14px;text-align:left;font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px}
+.table td{padding:12px 14px;border-top:1px solid #1f2937;font-size:13px}
+.table tr:hover td{background:#1f293740}
+.pill{padding:2px 8px;border-radius:20px;font-size:11px;font-weight:600}
+.pill-buy{background:#00d4aa22;color:#00d4aa}
+.pill-sell{background:#ef444422;color:#ef4444}
+.pill-win{background:#00d4aa22;color:#00d4aa}
+.pill-loss{background:#ef444422;color:#ef4444}
+.pill-open{background:#f5a62322;color:#f5a623}
+.pill-close{background:#6b728022;color:#6b7280}
+.btns{display:flex;gap:8px;padding:0 24px 20px}
+.btn{padding:8px 16px;border-radius:8px;border:none;cursor:pointer;font-size:13px;font-weight:600;transition:all 0.2s}
 .btn-green{background:#00d4aa22;color:#00d4aa;border:1px solid #00d4aa44}
 .btn-green:hover{background:#00d4aa44}
 .btn-yellow{background:#f5a62322;color:#f5a623;border:1px solid #f5a62344}
 .btn-yellow:hover{background:#f5a62344}
 .btn-red{background:#ef444422;color:#ef4444;border:1px solid #ef444444}
 .btn-red:hover{background:#ef444444}
-.btns{display:flex;gap:10px;margin-bottom:20px;padding:0 30px}
-.chart-container{background:#111827;border-radius:12px;border:1px solid #1f2937;padding:20px;margin:0 30px 24px;height:200px;position:relative}
-.chart-line{fill:none;stroke:#00d4aa;stroke-width:2}
-.chart-area{fill:url(#grad)}
-.footer{text-align:center;padding:16px;color:#374151;font-size:12px}
-.toast{position:fixed;top:20px;right:20px;background:#1f2937;color:#fff;padding:12px 20px;border-radius:10px;border:1px solid #374151;font-size:13px;display:none;z-index:999}
+.btn-blue{background:#3b82f622;color:#3b82f6;border:1px solid #3b82f644}
+.btn-blue:hover{background:#3b82f644}
+.chart-wrap{background:#111827;border-radius:12px;border:1px solid #1f2937;padding:16px;height:180px;position:relative;overflow:hidden}
+.pares-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px}
+.par-card{background:#111827;border:1px solid #1f2937;border-radius:10px;padding:12px;text-align:center}
+.par-nombre{font-size:11px;color:#9ca3af;margin-bottom:4px}
+.par-precio{font-size:15px;font-weight:700;color:#fff}
+.par-cambio{font-size:11px;margin-top:3px}
+.blacklist-badge{background:#ef444422;color:#ef4444;border:1px solid #ef444444;padding:2px 6px;border-radius:4px;font-size:10px;margin-left:4px}
+.toast{position:fixed;bottom:20px;right:20px;background:#1f2937;color:#fff;padding:12px 20px;border-radius:10px;border:1px solid #374151;font-size:13px;display:none;z-index:999;box-shadow:0 4px 20px #000}
+.progress-bar{height:4px;background:#1f2937;border-radius:2px;margin-top:8px;overflow:hidden}
+.progress-fill{height:100%;border-radius:2px;transition:width 0.3s}
+.stat-row{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #1f2937}
+.stat-row:last-child{border-bottom:none}
+.mode-selector{display:flex;gap:8px;margin-bottom:12px}
+.mode-btn{padding:6px 14px;border-radius:6px;border:1px solid #374151;background:transparent;color:#6b7280;cursor:pointer;font-size:12px;font-weight:600;transition:all 0.2s}
+.mode-btn.active{background:#00d4aa22;color:#00d4aa;border-color:#00d4aa44}
+.tab-bar{display:flex;gap:0;border-bottom:1px solid #1f2937;margin:0 24px 16px}
+.tab{padding:10px 20px;cursor:pointer;font-size:13px;color:#6b7280;border-bottom:2px solid transparent;transition:all 0.2s}
+.tab.active{color:#00d4aa;border-bottom-color:#00d4aa}
+.tab-content{display:none}.tab-content.active{display:block}
 </style>
 </head>
 <body>
+
 <div class="header">
-  <h1>OKX Trading Bot</h1>
-  <div style="display:flex;gap:10px;align-items:center">
-    <span class="badge">REAL</span>
-    <span style="color:#6b7280;font-size:13px" id="hora"></span>
+  <h1><div class="dot" id="dot"></div> OKX Trading Bot</h1>
+  <div style="display:flex;gap:8px;align-items:center">
+    <span class="badge badge-real">REAL</span>
+    <span class="badge" id="estado-badge">INACTIVO</span>
+    <span style="color:#6b7280;font-size:12px" id="hora-update"></span>
   </div>
 </div>
 
-<div class="grid">
-  <div class="card"><div class="label">Balance USDT</div><div class="value green" id="balance">$0.00</div></div>
-  <div class="card"><div class="label">PnL Hoy</div><div class="value" id="pnl-hoy">+$0.00</div></div>
-  <div class="card"><div class="label">PnL Total</div><div class="value" id="pnl-total">+$0.00</div></div>
-  <div class="card"><div class="label">Trades Hoy</div><div class="value yellow" id="trades-hoy">0</div></div>
-  <div class="card"><div class="label">Winrate</div><div class="value" id="winrate">0%</div></div>
-  <div class="card"><div class="label">Estado Bot</div><div class="value" id="estado">INACTIVO</div></div>
-  <div class="card"><div class="label">Posiciones</div><div class="value yellow" id="posiciones">0</div></div>
-  <div class="card"><div class="label">Capital Inicial</div><div class="value">$""" + str(CAPITAL_TOTAL_USD) + """</div></div>
+<!-- MÉTRICAS PRINCIPALES -->
+<div class="grid-4">
+  <div class="card">
+    <div class="card-title">Balance Total</div>
+    <div class="card-value green" id="balance-total">$0.00</div>
+    <div class="card-sub" id="balance-cambio">vs capital inicial</div>
+  </div>
+  <div class="card">
+    <div class="card-title">USDT Libre</div>
+    <div class="card-value white" id="usdt-libre">$0.00</div>
+    <div class="progress-bar"><div class="progress-fill" id="usdt-bar" style="background:#00d4aa;width:0%"></div></div>
+  </div>
+  <div class="card">
+    <div class="card-title">PnL Hoy</div>
+    <div class="card-value" id="pnl-hoy">+$0.00</div>
+    <div class="card-sub" id="pnl-hoy-pct">0.00%</div>
+  </div>
+  <div class="card">
+    <div class="card-title">PnL Total Acumulado</div>
+    <div class="card-value" id="pnl-total">+$0.00</div>
+    <div class="card-sub" id="pnl-total-pct">0.00% ROI</div>
+  </div>
+  <div class="card">
+    <div class="card-title">Trades Hoy</div>
+    <div class="card-value yellow" id="trades-hoy">0</div>
+    <div class="card-sub" id="trades-sub">0 ganados / 0 perdidos</div>
+  </div>
+  <div class="card">
+    <div class="card-title">Winrate Total</div>
+    <div class="card-value" id="winrate">0%</div>
+    <div class="progress-bar"><div class="progress-fill" id="winrate-bar" style="background:#00d4aa;width:0%"></div></div>
+  </div>
+  <div class="card">
+    <div class="card-title">Posiciones Abiertas</div>
+    <div class="card-value yellow" id="posiciones">0</div>
+    <div class="card-sub" id="pos-valor">$0.00 en mercado</div>
+  </div>
+  <div class="card">
+    <div class="card-title">Capital Inicial</div>
+    <div class="card-value white">$87.00</div>
+    <div class="card-sub">Configurado</div>
+  </div>
 </div>
 
+<!-- BOTONES DE CONTROL -->
 <div class="btns">
   <button class="btn btn-green" onclick="accion('iniciar')">▶ Iniciar Bot</button>
   <button class="btn btn-yellow" onclick="accion('pausar')">⏸ Pausar</button>
   <button class="btn btn-red" onclick="accion('detener')">⏹ Detener</button>
+  <button class="btn btn-blue" onclick="actualizar()">🔄 Actualizar</button>
 </div>
 
+<!-- MODO DE TRADING -->
 <div class="section">
-  <h2>Rendimiento del Capital</h2>
-  <div class="chart-container">
-    <svg id="chart" width="100%" height="100%" preserveAspectRatio="none">
-      <defs>
-        <linearGradient id="grad" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="#00d4aa" stop-opacity="0.3"/>
-          <stop offset="100%" stop-color="#00d4aa" stop-opacity="0"/>
-        </linearGradient>
-      </defs>
-      <text x="50%" y="50%" text-anchor="middle" fill="#6b7280" font-size="13">Sin datos aun</text>
-    </svg>
+  <div class="section-title">Modo de Trading</div>
+  <div class="mode-selector">
+    <button class="mode-btn" id="modo-conservador" onclick="cambiarModo('conservador')">🛡 Conservador (SL 1.5% / TP 2%)</button>
+    <button class="mode-btn active" id="modo-normal" onclick="cambiarModo('normal')">⚖ Normal (SL 2% / TP 4%)</button>
+    <button class="mode-btn" id="modo-agresivo" onclick="cambiarModo('agresivo')">🚀 Agresivo (SL 3% / TP 6%)</button>
   </div>
 </div>
 
-<div class="section">
-  <h2>Posiciones Abiertas</h2>
+<!-- TABS -->
+<div class="tab-bar">
+  <div class="tab active" onclick="showTab('abiertas')">Posiciones Abiertas</div>
+  <div class="tab" onclick="showTab('historial')">Historial Trades</div>
+  <div class="tab" onclick="showTab('estadisticas')">Estadísticas</div>
+  <div class="tab" onclick="showTab('mercado')">Mercado</div>
+</div>
+
+<!-- TAB: POSICIONES ABIERTAS -->
+<div id="tab-abiertas" class="tab-content active section">
   <table class="table">
     <thead><tr>
-      <th>Par</th><th>Lado</th><th>Entrada</th><th>Actual</th>
-      <th>Tamano</th><th>PnL</th><th>Stop Loss</th><th>Take Profit</th>
-      <th>Confianza</th><th>Abierta</th>
+      <th>Par</th><th>Entrada</th><th>Actual</th><th>Tamaño</th>
+      <th>PnL $</th><th>PnL %</th><th>SL</th><th>TP</th>
+      <th>Score</th><th>Estado</th><th>Tiempo</th>
     </tr></thead>
-    <tbody id="ops"><tr><td colspan="10" style="text-align:center;color:#6b7280;padding:20px">Sin posiciones abiertas</td></tr></tbody>
+    <tbody id="tabla-abiertas">
+      <tr><td colspan="11" style="text-align:center;color:#6b7280;padding:24px">Sin posiciones abiertas</td></tr>
+    </tbody>
   </table>
 </div>
 
-<div class="section">
-  <h2>Historial de Trades</h2>
+<!-- TAB: HISTORIAL -->
+<div id="tab-historial" class="tab-content section">
   <table class="table">
     <thead><tr>
-      <th>Par</th><th>Lado</th><th>Entrada</th><th>Salida</th>
-      <th>PnL</th><th>Duracion</th><th>Razon</th><th>Fecha</th>
+      <th>Par</th><th>Resultado</th><th>Entrada</th><th>Salida</th>
+      <th>PnL $</th><th>PnL %</th><th>Duración</th><th>Razón</th><th>Fecha</th>
     </tr></thead>
-    <tbody id="historial"><tr><td colspan="8" style="text-align:center;color:#6b7280;padding:20px">Sin trades aun</td></tr></tbody>
+    <tbody id="tabla-historial">
+      <tr><td colspan="9" style="text-align:center;color:#6b7280;padding:24px">Sin historial aún</td></tr>
+    </tbody>
   </table>
 </div>
 
-<div class="section">
-  <h2>Mercado en Tiempo Real</h2>
-  <div class="pares-grid" id="precios"><div style="color:#6b7280">Cargando...</div></div>
+<!-- TAB: ESTADÍSTICAS -->
+<div id="tab-estadisticas" class="tab-content section">
+  <div class="grid-3" style="padding:0 0 16px">
+    <div class="card">
+      <div class="card-title">Mejor Trade</div>
+      <div class="card-value green" id="mejor-trade">$0.00</div>
+    </div>
+    <div class="card">
+      <div class="card-title">Peor Trade</div>
+      <div class="card-value red" id="peor-trade">$0.00</div>
+    </div>
+    <div class="card">
+      <div class="card-title">Total Trades Histórico</div>
+      <div class="card-value yellow" id="total-trades">0</div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-title">Rendimiento por Par</div>
+    <div id="stats-pares" style="margin-top:8px">
+      <div style="color:#6b7280;font-size:13px">Sin datos aún</div>
+    </div>
+  </div>
+  <div style="margin-top:16px" class="card">
+    <div class="card-title">Pares en Blacklist</div>
+    <div id="blacklist-pares" style="margin-top:8px;color:#6b7280;font-size:13px">Ninguno</div>
+  </div>
 </div>
 
-<div class="footer">Actualizacion cada 15 segundos — OKX Trading Bot v1.0</div>
+<!-- TAB: MERCADO -->
+<div id="tab-mercado" class="tab-content section">
+  <div class="pares-grid" id="pares-mercado">
+    <div style="color:#6b7280">Cargando precios...</div>
+  </div>
+</div>
+
+<div style="text-align:center;padding:16px;color:#374151;font-size:12px">
+  OKX Trading Bot v2.0 — Actualización automática cada 15 segundos
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
-function mostrarToast(msg) {
+let modoActual = 'normal';
+
+function showTab(tab) {
+  document.querySelectorAll('.tab').forEach((t,i) => t.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+  event.target.classList.add('active');
+  document.getElementById('tab-' + tab).classList.add('active');
+}
+
+function mostrarToast(msg, tipo='info') {
   const t = document.getElementById('toast');
   t.textContent = msg;
+  t.style.background = tipo === 'error' ? '#ef444422' : '#1f2937';
   t.style.display = 'block';
   setTimeout(() => t.style.display = 'none', 3000);
 }
 
 async function accion(cmd) {
   try {
-    const r = await fetch('/api/accion/' + cmd, {method: 'POST'});
+    const r = await fetch('/api/accion/' + cmd, {method:'POST'});
     const d = await r.json();
-    mostrarToast(d.mensaje || cmd + ' ejecutado');
+    mostrarToast(d.mensaje || cmd);
     setTimeout(actualizar, 1000);
-  } catch(e) { mostrarToast('Error: ' + e); }
+  } catch(e) { mostrarToast('Error: ' + e, 'error'); }
 }
 
-function dibujarGrafica(datos) {
-  const svg = document.getElementById('chart');
-  if (!datos || datos.length < 2) return;
-  const w = svg.clientWidth || 800;
-  const h = svg.clientHeight || 160;
-  const pad = 10;
-  const valores = datos.map(d => d.balance);
-  const minV = Math.min(...valores);
-  const maxV = Math.max(...valores);
-  const rango = maxV - minV || 1;
-  const puntos = valores.map((v, i) => {
-    const x = pad + (i / (valores.length - 1)) * (w - pad * 2);
-    const y = pad + (1 - (v - minV) / rango) * (h - pad * 2);
-    return x + ',' + y;
-  });
-  const primero = puntos[0].split(',');
-  const ultimo  = puntos[puntos.length - 1].split(',');
-  svg.innerHTML = '<defs><linearGradient id="grad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#00d4aa" stop-opacity="0.3"/><stop offset="100%" stop-color="#00d4aa" stop-opacity="0"/></linearGradient></defs>' +
-    '<polyline class="chart-line" points="' + puntos.join(' ') + '"/>' +
-    '<polygon class="chart-area" points="' + primero[0] + ',' + h + ' ' + puntos.join(' ') + ' ' + ultimo[0] + ',' + h + '"/>';
+async function cambiarModo(modo) {
+  try {
+    const r = await fetch('/api/modo/' + modo, {method:'POST'});
+    const d = await r.json();
+    modoActual = modo;
+    document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('modo-' + modo).classList.add('active');
+    mostrarToast(d.mensaje || 'Modo cambiado: ' + modo);
+  } catch(e) { mostrarToast('Error cambiando modo', 'error'); }
 }
+
+function fmt(n, dec=2) { return Number(n||0).toFixed(dec); }
+function fmtUSD(n) { return '$' + fmt(n); }
+function fmtPct(n) { return (n>=0?'+':'') + fmt(n) + '%'; }
+function fmtSign(n) { return (n>=0?'+':'') + fmtUSD(n); }
+function colorClass(n) { return n >= 0 ? 'green' : 'red'; }
 
 async function actualizar() {
   try {
@@ -170,69 +275,145 @@ async function actualizar() {
     if (!r.ok) return;
     const d = await r.json();
 
-    document.getElementById('hora').textContent = 'Actualizado: ' + d.hora;
-    document.getElementById('balance').textContent = '$' + d.balance.toFixed(2);
-    document.getElementById('trades-hoy').textContent = d.trades_hoy;
-    document.getElementById('posiciones').textContent = d.posiciones;
+    document.getElementById('hora-update').textContent = 'Actualizado: ' + d.hora;
 
+    // Balance
+    document.getElementById('balance-total').textContent = fmtUSD(d.balance_total);
+    const roi = ((d.balance_total - 87) / 87) * 100;
+    document.getElementById('balance-cambio').textContent = fmtSign(d.balance_total - 87) + ' (' + fmtPct(roi) + ') vs $87';
+
+    // USDT libre
+    document.getElementById('usdt-libre').textContent = fmtUSD(d.usdt_libre);
+    const pctLibre = (d.usdt_libre / d.balance_total) * 100;
+    document.getElementById('usdt-bar').style.width = pctLibre + '%';
+
+    // PnL hoy
     const ph = d.pnl_hoy;
-    const eph = document.getElementById('pnl-hoy');
-    eph.textContent = (ph>=0?'+':'') + '$' + ph.toFixed(2);
-    eph.className = 'value ' + (ph>=0?'green':'red');
+    const ephEl = document.getElementById('pnl-hoy');
+    ephEl.textContent = fmtSign(ph);
+    ephEl.className = 'card-value ' + colorClass(ph);
+    const phPct = d.balance_total > 0 ? (ph / d.balance_total) * 100 : 0;
+    document.getElementById('pnl-hoy-pct').textContent = fmtPct(phPct) + ' hoy';
 
+    // PnL total
     const pt = d.pnl_total;
-    const ept = document.getElementById('pnl-total');
-    ept.textContent = (pt>=0?'+':'') + '$' + pt.toFixed(2);
-    ept.className = 'value ' + (pt>=0?'green':'red');
+    const eptEl = document.getElementById('pnl-total');
+    eptEl.textContent = fmtSign(pt);
+    eptEl.className = 'card-value ' + colorClass(pt);
+    document.getElementById('pnl-total-pct').textContent = fmtPct(roi) + ' ROI total';
 
-    const ewr = document.getElementById('winrate');
-    ewr.textContent = d.winrate + '%';
-    ewr.className = 'value ' + (d.winrate>=50?'green':'red');
+    // Trades
+    document.getElementById('trades-hoy').textContent = d.trades_hoy;
+    document.getElementById('trades-sub').textContent = d.ganados_hoy + ' ganados / ' + d.perdidos_hoy + ' perdidos';
 
-    const ee = document.getElementById('estado');
-    ee.textContent = d.activo ? 'ACTIVO' : 'INACTIVO';
-    ee.className = 'value ' + (d.activo?'green':'red');
+    // Winrate
+    const wr = d.winrate;
+    const wrEl = document.getElementById('winrate');
+    wrEl.textContent = wr + '%';
+    wrEl.className = 'card-value ' + (wr >= 50 ? 'green' : 'red');
+    document.getElementById('winrate-bar').style.width = wr + '%';
+    document.getElementById('winrate-bar').style.background = wr >= 50 ? '#00d4aa' : '#ef4444';
 
-    // Grafica
-    if (d.balance_historico && d.balance_historico.length > 1) {
-      dibujarGrafica(d.balance_historico);
+    // Posiciones
+    document.getElementById('posiciones').textContent = d.posiciones;
+    const valorMercado = (d.operaciones || []).reduce((s,o) => s + (o.precio_actual * (o.tamano_usdt / o.precio_entrada) || o.tamano_usdt), 0);
+    document.getElementById('pos-valor').textContent = fmtUSD(valorMercado) + ' en mercado';
+
+    // Estado badge
+    const badge = document.getElementById('estado-badge');
+    const dot = document.getElementById('dot');
+    if (d.activo) {
+      badge.textContent = 'ACTIVO';
+      badge.className = 'badge badge-activo';
+      dot.style.background = '#00d4aa';
+    } else {
+      badge.textContent = 'INACTIVO';
+      badge.className = 'badge badge-inactivo';
+      dot.style.background = '#ef4444';
     }
 
-    // Posiciones abiertas
-    const tbody = document.getElementById('ops');
+    // Tabla posiciones abiertas
+    const tbody = document.getElementById('tabla-abiertas');
     if (!d.operaciones || d.operaciones.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:#6b7280;padding:20px">Sin posiciones abiertas</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:#6b7280;padding:24px">Sin posiciones abiertas</td></tr>';
     } else {
       tbody.innerHTML = d.operaciones.map(op => {
         const pnl = op.pnl_actual || 0;
-        const pc = pnl>=0?'#00d4aa':'#ef4444';
-        return '<tr><td><strong>' + op.par + '</strong></td><td><span class="pill ' + op.lado + '">' + op.lado.toUpperCase() + '</span></td><td>$' + op.precio_entrada.toFixed(4) + '</td><td>$' + (op.precio_actual||0).toFixed(4) + '</td><td>$' + op.tamano_usdt.toFixed(2) + '</td><td style="color:' + pc + '">' + (pnl>=0?'+':'') + '$' + pnl.toFixed(2) + '</td><td style="color:#ef4444">$' + op.stop_loss.toFixed(4) + '</td><td style="color:#00d4aa">$' + op.take_profit.toFixed(4) + '</td><td>' + (op.confianza||0) + '%</td><td>' + (op.abierta_en||'-') + '</td></tr>';
+        const pnlPct = op.precio_entrada > 0 ? ((op.precio_actual - op.precio_entrada) / op.precio_entrada) * 100 : 0;
+        const pc = pnl >= 0 ? '#00d4aa' : '#ef4444';
+        const estado = pnl > op.tamano_usdt * 0.02 ? '🔥 Ganando bien' :
+                       pnl < -op.tamano_usdt * 0.015 ? '⚠️ Cerca SL' :
+                       pnl > 0 ? '📈 En ganancia' : '📉 En pérdida';
+        return '<tr>' +
+          '<td><strong>' + op.par + '</strong></td>' +
+          '<td>$' + fmt(op.precio_entrada, 4) + '</td>' +
+          '<td>$' + fmt(op.precio_actual, 4) + '</td>' +
+          '<td>$' + fmt(op.tamano_usdt) + '</td>' +
+          '<td style="color:' + pc + '">' + fmtSign(pnl) + '</td>' +
+          '<td style="color:' + pc + '">' + fmtPct(pnlPct) + '</td>' +
+          '<td style="color:#ef4444">$' + fmt(op.stop_loss, 4) + '</td>' +
+          '<td style="color:#00d4aa">$' + fmt(op.take_profit, 4) + '</td>' +
+          '<td>' + (op.confianza || 0) + '</td>' +
+          '<td>' + estado + '</td>' +
+          '<td>' + (op.abierta_en || '-') + '</td>' +
+        '</tr>';
       }).join('');
     }
 
     // Historial
-    const thist = document.getElementById('historial');
+    const thist = document.getElementById('tabla-historial');
     if (!d.historial || d.historial.length === 0) {
-      thist.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#6b7280;padding:20px">Sin trades aun</td></tr>';
+      thist.innerHTML = '<tr><td colspan="9" style="text-align:center;color:#6b7280;padding:24px">Sin historial aún</td></tr>';
     } else {
       thist.innerHTML = d.historial.map(t => {
         const pnl = t.pnl_usdt || 0;
-        const pc = pnl>=0?'#00d4aa':'#ef4444';
-        return '<tr><td><strong>' + t.par + '</strong></td><td><span class="pill ' + t.lado + '">' + t.lado.toUpperCase() + '</span></td><td>$' + (t.precio_entrada||0).toFixed(4) + '</td><td>$' + (t.precio_salida||0).toFixed(4) + '</td><td style="color:' + pc + '">' + (pnl>=0?'+':'') + '$' + pnl.toFixed(2) + '</td><td>' + (t.duracion_min||0) + 'm</td><td style="color:#6b7280;font-size:11px">' + (t.razon_salida||'-') + '</td><td>' + (t.cerrada_en||'-') + '</td></tr>';
+        const pct = t.precio_entrada > 0 ? ((t.precio_salida - t.precio_entrada) / t.precio_entrada) * 100 : 0;
+        const resultado = pnl >= 0 ? '<span class="pill pill-win">GANANCIA</span>' : '<span class="pill pill-loss">PÉRDIDA</span>';
+        return '<tr>' +
+          '<td><strong>' + t.par + '</strong></td>' +
+          '<td>' + resultado + '</td>' +
+          '<td>$' + fmt(t.precio_entrada, 4) + '</td>' +
+          '<td>$' + fmt(t.precio_salida, 4) + '</td>' +
+          '<td style="color:' + (pnl>=0?'#00d4aa':'#ef4444') + '">' + fmtSign(pnl) + '</td>' +
+          '<td style="color:' + (pct>=0?'#00d4aa':'#ef4444') + '">' + fmtPct(pct) + '</td>' +
+          '<td>' + (t.duracion_min || 0) + ' min</td>' +
+          '<td style="color:#6b7280;font-size:11px">' + (t.razon_salida || '-') + '</td>' +
+          '<td>' + (t.cerrada_en || '-') + '</td>' +
+        '</tr>';
       }).join('');
     }
 
-    // Precios
-    const pg = document.getElementById('precios');
-    if (!d.precios || d.precios.length === 0) {
-      pg.innerHTML = '<div style="color:#6b7280">Sin datos</div>';
-    } else {
-      pg.innerHTML = d.precios.map(p =>
-        '<div class="par-card"><div class="par-nombre">' + p.par + '</div><div class="par-precio">$' + Number(p.precio).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4}) + '</div><div class="par-cambio ' + (p.cambio>=0?'pos':'neg') + '">' + (p.cambio>=0?'▲':'▼') + ' ' + Math.abs(p.cambio).toFixed(2) + '%</div></div>'
-      ).join('');
+    // Estadísticas
+    if (d.stats) {
+      document.getElementById('mejor-trade').textContent = fmtUSD(d.stats.mejor_trade || 0);
+      document.getElementById('peor-trade').textContent = fmtUSD(d.stats.peor_trade || 0);
+      document.getElementById('total-trades').textContent = d.stats.total_trades || 0;
     }
+
+    // Blacklist
+    const bl = document.getElementById('blacklist-pares');
+    if (d.blacklist && d.blacklist.length > 0) {
+      bl.innerHTML = d.blacklist.map(p => '<span class="blacklist-badge">' + p + '</span>').join(' ');
+    } else {
+      bl.textContent = 'Ninguno — todos los pares activos';
+    }
+
+    // Mercado
+    const pg = document.getElementById('pares-mercado');
+    if (d.precios && d.precios.length > 0) {
+      pg.innerHTML = d.precios.map(p => {
+        const bl = d.blacklist && d.blacklist.includes(p.par);
+        return '<div class="par-card" style="' + (bl ? 'opacity:0.5;border-color:#ef4444' : '') + '">' +
+          '<div class="par-nombre">' + p.par + (bl ? '<span class="blacklist-badge">BL</span>' : '') + '</div>' +
+          '<div class="par-precio">$' + Number(p.precio).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4}) + '</div>' +
+          '<div class="par-cambio ' + (p.cambio>=0?'green':'red') + '">' + (p.cambio>=0?'▲':'▼') + ' ' + Math.abs(p.cambio).toFixed(2) + '%</div>' +
+        '</div>';
+      }).join('');
+    }
+
   } catch(e) { console.error('Error:', e); }
 }
+
 actualizar();
 setInterval(actualizar, 15000);
 </script>
@@ -243,6 +424,14 @@ estado_panel = {
     "motor": None,
     "okx":   None,
     "precios": [],
+    "modo": "normal",
+    "blacklist": [],
+}
+
+MODOS = {
+    "conservador": {"stop": 0.015, "tp": 0.02,  "trailing": 0.01},
+    "normal":      {"stop": 0.02,  "tp": 0.04,  "trailing": 0.015},
+    "agresivo":    {"stop": 0.03,  "tp": 0.06,  "trailing": 0.02},
 }
 
 
@@ -259,11 +448,7 @@ def actualizar_precios_cache():
                         stats  = okx.get_24h_stats(par)
                         cambio = stats.get("cambio_24h", 0.0) if stats else 0.0
                         if precio > 0:
-                            precios.append({
-                                "par":    par,
-                                "precio": float(precio),
-                                "cambio": float(cambio),
-                            })
+                            precios.append({"par": par, "precio": float(precio), "cambio": float(cambio)})
                     except Exception:
                         pass
                 estado_panel["precios"] = precios
@@ -284,18 +469,14 @@ class PanelHandler(BaseHTTPRequestHandler):
                 motor = estado_panel.get("motor")
                 msg   = "OK"
 
-                if cmd == "iniciar" and motor:
-                    if not motor.activo:
-                        import asyncio
-                        loop = asyncio.new_event_loop()
-                        t = threading.Thread(
-                            target=lambda: loop.run_until_complete(motor.iniciar()),
-                            daemon=True
-                        )
-                        t.start()
-                        msg = "Bot iniciado"
-                    else:
-                        msg = "Bot ya estaba activo"
+                if cmd == "iniciar" and motor and not motor.activo:
+                    import asyncio
+                    t = threading.Thread(
+                        target=lambda: asyncio.new_event_loop().run_until_complete(motor.iniciar()),
+                        daemon=True
+                    )
+                    t.start()
+                    msg = "Bot iniciado"
                 elif cmd == "pausar" and motor:
                     motor.detener()
                     msg = "Bot pausado"
@@ -304,13 +485,31 @@ class PanelHandler(BaseHTTPRequestHandler):
                     msg = "Bot detenido"
 
                 resp = json.dumps({"ok": True, "mensaje": msg}).encode()
-                self.send_response(200)
-                self.send_header('Content-type', 'application/json')
-                self.send_header('Content-Length', len(resp))
-                self.end_headers()
-                self.wfile.write(resp)
+                self._json(resp)
+
+            elif self.path.startswith('/api/modo/'):
+                modo  = self.path.split('/')[-1]
+                motor = estado_panel.get("motor")
+                if modo in MODOS and motor:
+                    cfg = MODOS[modo]
+                    import config.settings as s
+                    s.STOP_LOSS_PCT   = cfg["stop"]
+                    s.TAKE_PROFIT_PCT = cfg["tp"]
+                    s.TRAILING_PCT    = cfg["trailing"]
+                    estado_panel["modo"] = modo
+                    msg = f"Modo {modo}: SL {cfg['stop']*100:.1f}% / TP {cfg['tp']*100:.1f}%"
+                else:
+                    msg = "Modo no reconocido"
+                self._json(json.dumps({"ok": True, "mensaje": msg}).encode())
         except Exception:
             pass
+
+    def _json(self, content):
+        self.send_response(200)
+        self.send_header('Content-type', 'application/json')
+        self.send_header('Content-Length', len(content))
+        self.end_headers()
+        self.wfile.write(content)
 
     def do_GET(self):
         try:
@@ -326,42 +525,43 @@ class PanelHandler(BaseHTTPRequestHandler):
                 motor = estado_panel.get("motor")
                 okx   = estado_panel.get("okx")
 
-                balance   = 0.0
-                pnl_hoy   = 0.0
-                pnl_total = 0.0
-                trades    = 0
-                activo    = False
-                ops       = []
-                ganados   = 0
-                perdidos  = 0
-                db        = None
+                usdt_libre    = 0.0
+                balance_total = 0.0
+                pnl_hoy       = 0.0
+                pnl_total     = 0.0
+                trades_hoy    = 0
+                ganados_hoy   = 0
+                perdidos_hoy  = 0
+                activo        = False
+                ops           = []
+                db            = None
 
                 try:
                     if okx:
-                        balance = okx.get_balance()
+                        usdt_libre    = okx.get_balance()
+                        balance_total = okx.get_total_balance_usdt()
                     if motor:
-                        pnl_hoy   = motor.pnl_hoy
-                        pnl_total = motor.pnl_total
-                        trades    = motor.trades_hoy
-                        activo    = motor.activo
-                        ops       = motor.operaciones
-                        ganados   = motor.trades_ganados
-                        perdidos  = motor.trades_perdidos
-                        db        = motor.db
+                        pnl_hoy      = motor.pnl_hoy
+                        pnl_total    = motor.pnl_total
+                        trades_hoy   = motor.trades_hoy
+                        ganados_hoy  = motor.trades_ganados
+                        perdidos_hoy = motor.trades_perdidos
+                        activo       = motor.activo
+                        ops          = motor.operaciones
+                        db           = motor.db
                 except Exception:
                     pass
 
-                winrate = 0
-                if (ganados + perdidos) > 0:
-                    winrate = int((ganados / (ganados + perdidos)) * 100)
+                total = ganados_hoy + perdidos_hoy
+                winrate = int((ganados_hoy / total) * 100) if total > 0 else 0
 
                 ops_data = []
                 for op in ops:
                     try:
                         precio_actual = okx.get_price(op["par"]) if okx else 0.0
+                        pnl_pct = (precio_actual - op["precio_entrada"]) / op["precio_entrada"] * 100 if op["precio_entrada"] > 0 else 0
                         ops_data.append({
                             "par":            op["par"],
-                            "lado":           op["lado"],
                             "precio_entrada": float(op["precio_entrada"]),
                             "precio_actual":  float(precio_actual),
                             "tamano_usdt":    float(op["tamaño_usdt"]),
@@ -375,14 +575,12 @@ class PanelHandler(BaseHTTPRequestHandler):
                         pass
 
                 historial = []
-                balance_historico = []
+                stats     = {}
                 if db:
                     try:
-                        trades_hist = db.get_trades_historial(20)
-                        for t in trades_hist:
+                        for t in db.get_trades_historial(30):
                             historial.append({
                                 "par":           t.par,
-                                "lado":          t.lado,
                                 "precio_entrada": float(t.precio_entrada or 0),
                                 "precio_salida":  float(t.precio_salida or 0),
                                 "pnl_usdt":       float(t.pnl_usdt or 0),
@@ -390,28 +588,32 @@ class PanelHandler(BaseHTTPRequestHandler):
                                 "razon_salida":   t.razon_salida or "-",
                                 "cerrada_en":     t.cerrada_en.strftime("%d/%m %H:%M") if t.cerrada_en else "-",
                             })
-                        bal_hist = db.get_balance_historico(30)
-                        for b in bal_hist:
-                            balance_historico.append({
-                                "fecha":   b.fecha.strftime("%d/%m"),
-                                "balance": float(b.balance),
-                            })
+                        stats = db.get_estadisticas()
                     except Exception:
                         pass
 
+                blacklist = []
+                if motor and hasattr(motor, 'blacklist'):
+                    blacklist = list(motor.blacklist.keys())
+
                 data = {
-                    "activo":            activo,
-                    "balance":           float(balance),
-                    "pnl_hoy":           float(pnl_hoy),
-                    "pnl_total":         float(pnl_total),
-                    "trades_hoy":        int(trades),
-                    "winrate":           int(winrate),
-                    "posiciones":        len(ops_data),
-                    "operaciones":       ops_data,
-                    "historial":         historial,
-                    "balance_historico": balance_historico,
-                    "precios":           estado_panel["precios"],
-                    "hora":              datetime.now().strftime("%H:%M:%S"),
+                    "activo":        activo,
+                    "usdt_libre":    float(usdt_libre),
+                    "balance_total": float(balance_total),
+                    "pnl_hoy":       float(pnl_hoy),
+                    "pnl_total":     float(pnl_total),
+                    "trades_hoy":    int(trades_hoy),
+                    "ganados_hoy":   int(ganados_hoy),
+                    "perdidos_hoy":  int(perdidos_hoy),
+                    "winrate":       int(winrate),
+                    "posiciones":    len(ops_data),
+                    "operaciones":   ops_data,
+                    "historial":     historial,
+                    "stats":         stats,
+                    "precios":       estado_panel["precios"],
+                    "blacklist":     blacklist,
+                    "modo":          estado_panel["modo"],
+                    "hora":          datetime.now().strftime("%H:%M:%S"),
                 }
 
                 contenido = json.dumps(data).encode('utf-8')
@@ -432,11 +634,9 @@ def iniciar_panel(motor=None, okx=None, puerto=8080):
     estado_panel["motor"] = motor
     estado_panel["okx"]   = okx
 
-    hilo_precios = threading.Thread(target=actualizar_precios_cache, daemon=True)
-    hilo_precios.start()
+    threading.Thread(target=actualizar_precios_cache, daemon=True).start()
 
     servidor = HTTPServer(('0.0.0.0', puerto), PanelHandler)
-    hilo = threading.Thread(target=servidor.serve_forever, daemon=True)
-    hilo.start()
+    threading.Thread(target=servidor.serve_forever, daemon=True).start()
     print(f"[OK] Panel web iniciado en http://localhost:{puerto}")
     return servidor
