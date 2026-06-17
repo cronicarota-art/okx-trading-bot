@@ -30,8 +30,8 @@ class Motor:
         self.trades_perdidos = 0
         self.ciclo_num       = 0
         self.db              = Database()
-        self.blacklist       = {}  # par -> datetime de cuando expira
-        self.perdidas_par    = {}  # par -> contador de perdidas seguidas
+        self.blacklist       = {}
+        self.perdidas_par    = {}
         self.ultimo_reporte_semanal = None
         print("[INFO] Motor hibrido iniciado (Grid + Trend + RSI)")
 
@@ -62,30 +62,25 @@ class Motor:
         print(f"\n{'='*50}")
         print(f"[CICLO #{self.ciclo_num}] {ahora.strftime('%d/%m/%Y %H:%M:%S')}")
 
-        # Limpiar blacklist expirada
         self._limpiar_blacklist()
-
         await self.monitorear_posiciones()
 
         if self.puede_abrir_trade():
             await self.escanear_y_operar()
 
-        # Reporte cada hora (cada 4 ciclos de 15min)
         if self.ciclo_num % 4 == 0:
             await self.enviar_reporte()
 
-        # Reporte diario a las 9am
         if ahora.hour == 9 and ahora.minute < 15:
             await self.reporte_diario()
 
-        # Reporte semanal lunes 9am
         if ahora.weekday() == 0 and ahora.hour == 9 and ahora.minute < 15:
             if self.ultimo_reporte_semanal != ahora.date():
                 self.ultimo_reporte_semanal = ahora.date()
                 await self.reporte_semanal()
 
     def _limpiar_blacklist(self):
-        ahora    = datetime.now()
+        ahora     = datetime.now()
         expirados = [par for par, exp in self.blacklist.items() if ahora >= exp]
         for par in expirados:
             del self.blacklist[par]
@@ -132,19 +127,15 @@ class Motor:
         return True
 
     def calcular_tamano(self):
-        """Gestión dinámica de capital — crece con el balance."""
-        balance_usdt   = self.okx.get_balance("USDT")
-        balance_total  = self.okx.get_total_balance_usdt()
-        pares_libres   = len([p for p in PARES_PRINCIPALES
-                               if p not in [op["par"] for op in self.operaciones]
-                               and p not in self.blacklist])
+        balance_usdt  = self.okx.get_balance("USDT")
+        balance_total = self.okx.get_total_balance_usdt()
+        pares_libres  = len([p for p in PARES_PRINCIPALES
+                              if p not in [op["par"] for op in self.operaciones]
+                              and p not in self.blacklist])
         if pares_libres == 0:
             return 0
-
-        # Capital dinámico: crece proporcionalmente al balance
         capital_por_trade = balance_total * MAX_RISK_PER_TRADE
         tamano = min(capital_por_trade, balance_usdt * 0.90)
-
         if tamano < MIN_ORDER_USDT:
             if balance_usdt >= MIN_ORDER_USDT:
                 tamano = MIN_ORDER_USDT
@@ -221,7 +212,6 @@ class Motor:
         tipo  = ""
         razon = []
 
-        # ESTRATEGIA 1: RSI sobreventa
         if rsi_1h < 28:
             score += 50
             tipo   = "RSI_SOBREVENTA_EXTREMA"
@@ -242,7 +232,6 @@ class Motor:
             score += 10
             razon.append(f"RSI 15m bajo: {rsi_15m:.0f}")
 
-        # ESTRATEGIA 2: Bollinger
         if boll_1h["posicion"] == "SOBREVENTA":
             score += 30
             tipo   = tipo or "BOLLINGER_INFERIOR"
@@ -251,7 +240,6 @@ class Motor:
             score += 15
             razon.append("Precio zona baja Bollinger")
 
-        # ESTRATEGIA 3: MACD
         if macd_1h.get("cruce_alcista"):
             score += 25
             tipo   = tipo or "MACD_CRUCE"
@@ -260,7 +248,6 @@ class Motor:
             score += 8
             razon.append("MACD positivo")
 
-        # ESTRATEGIA 4: Tendencia
         if tendencia == "ALCISTA" and compras_count >= 2:
             score += 25
             tipo   = tipo or "TREND_FOLLOWING"
@@ -269,7 +256,6 @@ class Motor:
             score += 15
             razon.append("Tendencia lateral con compras")
 
-        # ESTRATEGIA 5: Multitimeframe
         if compras_count == 3:
             score += 25
             razon.append("3 timeframes alineados")
@@ -277,7 +263,6 @@ class Motor:
             score += 12
             razon.append("2 timeframes alineados")
 
-        # FILTROS
         if rsi_1h > 72:
             score -= 35
         if rsi_4h > 75:
@@ -340,18 +325,18 @@ class Motor:
                 f"COMPRA ejecutada\n\n"
                 f"Par: {par}\n"
                 f"Estrategia: {tipo}\n"
-                f"Precio: ${precio_real:,.4f}\n"
+                f"Precio entrada: ${precio_real:,.4f}\n"
                 f"Tamano: ${valor_real:.2f} USDT\n"
-                f"SL: ${stop_loss:,.4f} (-{STOP_LOSS_PCT*100:.1f}%)\n"
-                f"TP: ${take_profit:,.4f} (+{TAKE_PROFIT_PCT*100:.1f}%)\n"
+                f"Stop Loss: ${stop_loss:,.4f} (-{STOP_LOSS_PCT*100:.1f}%)\n"
+                f"Take Profit: ${take_profit:,.4f} (+{TAKE_PROFIT_PCT*100:.1f}%)\n"
                 f"RSI: {rsi:.0f} | Score: {score}\n"
-                f"{razon_str}\n"
-                f"{datetime.now().strftime('%H:%M:%S')}"
+                f"Razon: {razon_str}\n"
+                f"Hora: {datetime.now().strftime('%H:%M:%S')}"
             )
         else:
             error = resultado.get("error", "Error desconocido")
             print(f"[ERROR] {par}: {error}")
-            await self.notifier.enviar(f"Error {par}\n{error}")
+            await self.notifier.enviar(f"Error en trade {par}\n{error}")
 
     async def monitorear_posiciones(self):
         if not self.operaciones:
@@ -375,7 +360,6 @@ class Motor:
             print(f"  {par}: ${precio_actual:,.4f} | "
                   f"PnL: {pnl_usdt:+.2f} USDT ({pnl_pct*100:+.2f}%)")
 
-            # Trailing stop
             if precio_actual > op["trailing_max"]:
                 op["trailing_max"] = precio_actual
                 nuevo_sl = precio_actual * (1 - TRAILING_PCT)
@@ -425,17 +409,15 @@ class Motor:
                 f"{emoji}\n\n"
                 f"Par: {par}\n"
                 f"Entrada: ${op['precio_entrada']:,.4f}\n"
-                f"Salida: ${precio_actual:,.4f}\n"
+                f"Salida:  ${precio_actual:,.4f}\n"
                 f"PnL: {pnl_usdt:+.2f} USDT ({pct:+.2f}%)\n"
                 f"Duracion: {duracion} min\n"
                 f"Razon: {razon}\n"
-                f"PnL acumulado: {self.pnl_hoy:+.2f} USDT"
+                f"PnL acumulado hoy: {self.pnl_hoy:+.2f} USDT"
             )
         else:
             print(f"[ERROR] No se pudo cerrar {par}: {resultado.get('error')}")
-            await self.notifier.enviar(
-                f"Error cerrando {par}\n{resultado.get('error')}"
-            )
+            await self.notifier.enviar(f"Error cerrando {par}\n{resultado.get('error')}")
 
     async def enviar_reporte(self):
         balance_usdt  = self.okx.get_balance("USDT")
@@ -444,35 +426,75 @@ class Motor:
         total_trades  = self.trades_ganados + self.trades_perdidos
         winrate       = int((self.trades_ganados / total_trades) * 100) if total_trades > 0 else 0
         roi           = ((balance_total - CAPITAL_TOTAL_USD) / CAPITAL_TOTAL_USD) * 100
-        pnl_emoji     = "subiendo" if self.pnl_hoy >= 0 else "bajando"
+        ahora         = datetime.now().strftime('%d/%m/%Y %H:%M')
+
+        if self.pnl_hoy > 0:
+            tend_emoji = "📈"
+        elif self.pnl_hoy < 0:
+            tend_emoji = "📉"
+        else:
+            tend_emoji = "➡️"
 
         lineas = [
-            f"Reporte | {datetime.now().strftime('%d/%m/%Y %H:%M')}\n",
-            f"USDT libre: ${balance_usdt:,.2f}",
-            f"Valor total: ${balance_total:,.2f} USDT",
-            f"ROI total: {roi:+.2f}%",
-            f"PnL hoy: {self.pnl_hoy:+.2f} USDT ({pnl_emoji})",
-            f"PnL total: {self.pnl_total:+.2f} USDT",
-            f"Trades hoy: {self.trades_hoy} | Winrate: {winrate}%",
+            f"━━━━━━━━━━━━━━━━━━━━━",
+            f"📊 REPORTE | {ahora}",
+            f"━━━━━━━━━━━━━━━━━━━━━\n",
+            f"💰 Balance:    ${balance_total:,.2f} USDT",
+            f"💵 USDT libre: ${balance_usdt:,.2f}",
+            f"📊 ROI total:  {roi:+.2f}%\n",
+            f"{tend_emoji} PnL hoy:      {self.pnl_hoy:+.2f} USDT",
+            f"📈 PnL total:  {self.pnl_total:+.2f} USDT\n",
+            f"🔄 Trades hoy: {self.trades_hoy}",
+            f"✅ Ganados:    {self.trades_ganados}",
+            f"❌ Perdidos:   {self.trades_perdidos}",
+            f"🎯 Winrate:    {winrate}%",
         ]
 
         if self.blacklist:
-            lineas.append(f"\nBlacklist activa: {', '.join(self.blacklist.keys())}")
-
-        if posiciones:
-            lineas.append(f"\nPosiciones en OKX:")
-            for p in posiciones:
-                lineas.append(f"• {p['ccy']}: {p['cantidad']:.4f} = ${p['valor_usdt']:.2f}")
+            lineas.append(f"\n🚫 Blacklist: {', '.join(self.blacklist.keys())}")
 
         if self.operaciones:
-            lineas.append(f"\nTrades activos:")
+            lineas.append(f"\n━━━━━━━━━━━━━━━━━━━━━")
+            lineas.append(f"📌 POSICIONES ABIERTAS ({len(self.operaciones)})")
+            lineas.append(f"━━━━━━━━━━━━━━━━━━━━━")
             for op in self.operaciones:
-                pnl = op.get("pnl_actual", 0)
-                lineas.append(
-                    f"• {op['par']} | ${op['precio_entrada']:,.4f} | "
-                    f"PnL: {pnl:+.2f}"
-                )
+                pnl        = op.get("pnl_actual", 0)
+                precio_act = self.okx.get_price(op["par"])
+                pct        = ((precio_act - op["precio_entrada"]) / op["precio_entrada"]) * 100 if op["precio_entrada"] > 0 else 0
+                duracion   = int((datetime.now() - op["abierta_en"]).total_seconds() / 60)
+                horas      = duracion // 60
+                minutos    = duracion % 60
+                dur_txt    = f"{horas}h {minutos}m" if horas > 0 else f"{minutos}m"
+                dist_tp    = ((op["take_profit"] - precio_act) / precio_act) * 100
+                dist_sl    = ((precio_act - op["stop_loss"]) / precio_act) * 100
 
+                if pnl > op["tamaño_usdt"] * 0.02:
+                    estado = "🔥 Ganando bien"
+                elif pnl > 0:
+                    estado = "📈 En ganancia"
+                elif pnl < -op["tamaño_usdt"] * 0.015:
+                    estado = "⚠️ Cerca del SL"
+                else:
+                    estado = "📉 En perdida"
+
+                lineas.append(
+                    f"\n{estado} — {op['par']}\n"
+                    f"Entrada: ${op['precio_entrada']:,.4f}\n"
+                    f"Actual:  ${precio_act:,.4f} ({pct:+.2f}%)\n"
+                    f"PnL: {pnl:+.2f} USDT\n"
+                    f"TP en: +{dist_tp:.2f}% | SL en: -{dist_sl:.2f}%\n"
+                    f"Tiempo: {dur_txt}"
+                )
+        elif posiciones:
+            lineas.append(f"\n━━━━━━━━━━━━━━━━━━━━━")
+            lineas.append(f"💼 EN OKX ({len(posiciones)} activos)")
+            lineas.append(f"━━━━━━━━━━━━━━━━━━━━━")
+            for p in posiciones:
+                lineas.append(f"• {p['ccy']}: {p['cantidad']:.4f} = ${p['valor_usdt']:.2f}")
+        else:
+            lineas.append(f"\n⏳ Sin posiciones — buscando señales...")
+
+        lineas.append(f"\n━━━━━━━━━━━━━━━━━━━━━")
         await self.notifier.enviar("\n".join(lineas))
 
     async def reporte_diario(self):
@@ -489,18 +511,22 @@ class Motor:
         )
 
         await self.notifier.enviar(
-            f"Reporte Diario — {datetime.now().strftime('%d/%m/%Y')}\n\n"
-            f"Balance total: ${balance_total:,.2f} USDT\n"
-            f"ROI total: {roi:+.2f}%\n"
-            f"PnL hoy: {self.pnl_hoy:+.2f} USDT\n"
-            f"PnL acumulado: {self.pnl_total:+.2f} USDT\n\n"
-            f"Trades hoy: {self.trades_hoy}\n"
-            f"Ganados: {self.trades_ganados}\n"
-            f"Perdidos: {self.trades_perdidos}\n"
-            f"Winrate total: {stats.get('winrate', 0)}%\n\n"
-            f"Mejor trade: +${stats.get('mejor_trade', 0):.2f}\n"
-            f"Peor trade: ${stats.get('peor_trade', 0):.2f}\n"
-            f"Total historico: {stats.get('total_trades', 0)} trades"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🌅 REPORTE DIARIO\n"
+            f"{datetime.now().strftime('%d/%m/%Y')}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"💰 Balance: ${balance_total:,.2f} USDT\n"
+            f"📊 ROI total: {roi:+.2f}%\n"
+            f"📈 PnL hoy: {self.pnl_hoy:+.2f} USDT\n"
+            f"📈 PnL acumulado: {self.pnl_total:+.2f} USDT\n\n"
+            f"🔄 Trades hoy: {self.trades_hoy}\n"
+            f"✅ Ganados: {self.trades_ganados}\n"
+            f"❌ Perdidos: {self.trades_perdidos}\n"
+            f"🎯 Winrate total: {stats.get('winrate', 0)}%\n\n"
+            f"🏆 Mejor trade: +${stats.get('mejor_trade', 0):.2f}\n"
+            f"📉 Peor trade: ${stats.get('peor_trade', 0):.2f}\n"
+            f"📊 Total historico: {stats.get('total_trades', 0)} trades\n"
+            f"━━━━━━━━━━━━━━━━━━━━━"
         )
 
         self.pnl_hoy         = 0.0
@@ -515,27 +541,33 @@ class Motor:
         roi           = ((balance_total - CAPITAL_TOTAL_USD) / CAPITAL_TOTAL_USD) * 100
 
         lineas = [
-            f"REPORTE SEMANAL\n",
-            f"Semana del {(datetime.now() - timedelta(days=7)).strftime('%d/%m')} al {datetime.now().strftime('%d/%m/%Y')}\n",
-            f"Balance total: ${balance_total:,.2f} USDT",
-            f"ROI total: {roi:+.2f}%",
-            f"PnL acumulado: {self.pnl_total:+.2f} USDT\n",
-            f"Total trades: {stats.get('total_trades', 0)}",
-            f"Ganados: {stats.get('ganados', 0)}",
-            f"Perdidos: {stats.get('perdidos', 0)}",
-            f"Winrate: {stats.get('winrate', 0)}%\n",
-            f"Mejor trade: +${stats.get('mejor_trade', 0):.2f}",
-            f"Peor trade: ${stats.get('peor_trade', 0):.2f}\n",
+            f"━━━━━━━━━━━━━━━━━━━━━",
+            f"📅 REPORTE SEMANAL",
+            f"{(datetime.now() - timedelta(days=7)).strftime('%d/%m')} — {datetime.now().strftime('%d/%m/%Y')}",
+            f"━━━━━━━━━━━━━━━━━━━━━\n",
+            f"💰 Balance: ${balance_total:,.2f} USDT",
+            f"📊 ROI total: {roi:+.2f}%",
+            f"📈 PnL acumulado: {self.pnl_total:+.2f} USDT\n",
+            f"📊 Total trades: {stats.get('total_trades', 0)}",
+            f"✅ Ganados: {stats.get('ganados', 0)}",
+            f"❌ Perdidos: {stats.get('perdidos', 0)}",
+            f"🎯 Winrate: {stats.get('winrate', 0)}%\n",
+            f"🏆 Mejor trade: +${stats.get('mejor_trade', 0):.2f}",
+            f"📉 Peor trade: ${stats.get('peor_trade', 0):.2f}\n",
         ]
 
         if stats_par:
-            lineas.append("Rendimiento por par:")
+            lineas.append(f"━━━━━━━━━━━━━━━━━━━━━")
+            lineas.append(f"📊 RENDIMIENTO POR PAR")
+            lineas.append(f"━━━━━━━━━━━━━━━━━━━━━")
             for par, data in sorted(stats_par.items(), key=lambda x: x[1]['pnl'], reverse=True):
+                emoji = "✅" if data['pnl'] >= 0 else "❌"
                 lineas.append(
-                    f"• {par}: {data['pnl']:+.2f} USDT "
+                    f"{emoji} {par}: {data['pnl']:+.2f} USDT "
                     f"({data['ganados']}G / {data['perdidos']}P)"
                 )
 
+        lineas.append(f"━━━━━━━━━━━━━━━━━━━━━")
         await self.notifier.enviar("\n".join(lineas))
 
     def detener(self):
