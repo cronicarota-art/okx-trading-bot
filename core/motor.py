@@ -12,7 +12,7 @@ from config.settings import (
 from utils.indicators import Indicators
 from utils.database import Database
 
-PARES_PRINCIPALES = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "DOGE-USDT"]
+PARES_PRINCIPALES = ["BTC-USDT", "ETH-USDT"]
 MAX_PERDIDAS_BLACKLIST = 3
 HORAS_BLACKLIST = 24
 
